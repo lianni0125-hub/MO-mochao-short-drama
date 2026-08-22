@@ -1,0 +1,22 @@
+{
+  "name": "ai-short-drama-writer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "本地优先的 AI 短剧自动编剧工作台",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "node --test --test-concurrency=1",
+    "update:sources": "node src/jobs/update-sources.js"
+  },
+  "dependencies": {
+    "docx": "^9.5.1",
+    "express": "^5.1.0",
+    "jsonrepair": "^3.15.0",
+    "mammoth": "^1.10.0",
+    "multer": "^2.0.2",
+    "openai": "^5.20.3",
+    "rss-parser": "^3.13.0"
+  }
+}

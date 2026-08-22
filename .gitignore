@@ -1,0 +1,11 @@
+node_modules/
+.env
+data/*.db
+data/*.db-*
+data/uploads/*
+data/exports/*
+!data/uploads/.gitkeep
+!data/exports/.gitkeep
+npm-debug.log*
+server*.log
+tmp/

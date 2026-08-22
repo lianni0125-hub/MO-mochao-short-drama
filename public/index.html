@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>墨潮 · AI 短剧编剧工作台</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/new-flow.css" />
+  <link rel="stylesheet" href="/library.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">墨</span><div><strong>墨潮</strong><small>AI SHORT DRAMA STUDIO</small></div></div>
+      <button class="new-project" id="newProject">＋ 新建短剧项目</button>
+      <p class="eyebrow">创作项目</p><div id="projectList" class="project-list"></div>
+      <div class="side-footer"><div class="model-status"><span id="providerDot" class="dot"></span><span id="providerText">正在检查模型…</span></div><button type="button" id="trashButton" class="trash-button">回收站</button></div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow">PROJECT WORKSPACE</p><h1 id="projectTitle">选择或新建一个项目</h1></div>
+        <div class="top-actions"><button class="ghost" id="settingsButton">模型设置</button><button class="ghost" id="libraryButton">灵感资料库</button><button class="ghost" id="templateButton">导入专业模板</button><button class="primary" id="exportButton">导出 DOCX</button></div>
+      </header>
+      <div id="emptyState" class="empty-state"><div class="empty-symbol">✦</div><h2>让一个故事，从灵感走到成片剧本</h2><p>创建项目后，系统会沿专业短剧流程逐步完成创意、故事设计、卡点、逐集框架和单集剧本。</p><button class="primary" onclick="document.querySelector('#newProject').click()">创建第一个项目</button></div>
+      <section id="workspace" class="workspace hidden">
+        <nav class="stage-nav" id="stageNav"></nav>
+        <div class="content-grid">
+          <section class="main-panel">
+            <div id="stageContent"></div>
+          </section>
+          <aside class="context-panel">
+            <div class="context-head"><div><p class="eyebrow">STORY CONTROL</p><h3>创作控制台</h3></div><span class="status-pill" id="stageStatus">草稿</span></div>
+            <div class="context-tabs"><button class="active" data-side="state">故事状态</button><button data-side="template">模板</button><button data-side="tasks">任务列表</button></div>
+            <div id="sideContent"></div>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="projectDialog"><form method="dialog" id="projectForm"><div class="dialog-head"><div><p class="eyebrow">NEW PROJECT</p><h2>建立创作项目</h2></div><button type="button" data-close-dialog class="icon-btn">×</button></div><label>项目名称<input name="title" required placeholder="例如：她从火场归来" /></label><div class="two"><label>总集数<input name="total_episodes" type="number" min="1" value="60" /></label><label>题材标签<input name="tags" placeholder="复仇、都市、女性成长" /></label></div><label>初始灵感<textarea name="seed" rows="4" placeholder="可以只有一句不完整的角色 Hook…"></textarea></label><div class="two"><label>目标受众<input name="audience" placeholder="例如：18–35 岁女性" /></label><label>平台倾向<input name="platform" placeholder="红果 / 快手 / 待定" /></label></div><label>其他硬性要求<textarea name="restrictions" rows="3"></textarea></label><div class="dialog-actions"><button type="button" data-close-dialog class="ghost">取消</button><button type="submit" value="default" class="primary">创建并进入 Idea</button></div></form></dialog>
+  <dialog id="templateDialog"><form method="dialog" id="templateForm"><div class="dialog-head"><div><p class="eyebrow">PROFESSIONAL TEMPLATE</p><h2>导入 DOCX 模板</h2></div><button type="button" data-close-dialog class="icon-btn">×</button></div><p class="muted">先提取与默认模板一致的内容类型，下一步可核对和编辑，确认后才会保存。</p><label>模板文件<input name="file" type="file" accept=".docx" required /></label><label>模板名称<input name="name" placeholder="例如：中文短剧标准模板" /></label><div class="dialog-actions"><button type="button" data-close-dialog class="ghost">取消</button><button type="submit" class="primary">分析模板</button></div></form></dialog>
+  <dialog id="templateReviewDialog" class="wide-dialog"><form method="dialog" id="templateReviewForm" class="template-review-form"><div class="dialog-head"><div><p class="eyebrow">REVIEW EXTRACTION</p><h2>核对模板提取结果</h2></div><button type="button" data-close-dialog class="icon-btn">×</button></div><p class="muted">这些内容将成为该模板的正式规则。可直接修改；只有点击“确认保存”才会加入模板列表。</p><div id="templateDetectedSummary" class="template-detected-summary"></div><label>模板名称<input name="name" required maxlength="120"></label><section class="template-review-section"><h3>篇幅与场次</h3><div class="template-range-grid"><fieldset><legend>小说字数</legend><input name="novel_min" type="number" min="1" required><input name="novel_ideal" type="number" min="1" required><input name="novel_max" type="number" min="1" required><small>最少 / 理想 / 最多</small></fieldset><fieldset><legend>剧本字数</legend><input name="script_min" type="number" min="1" required><input name="script_ideal" type="number" min="1" required><input name="script_max" type="number" min="1" required><small>最少 / 理想 / 最多</small></fieldset><fieldset><legend>每集场次</legend><input name="scene_min" type="number" min="1" required><input name="scene_ideal" type="number" min="1" required><input name="scene_max" type="number" min="1" required><small>最少 / 理想 / 最多</small></fieldset></div></section><section class="template-review-section"><h3>剧本格式</h3><div class="two"><label>集标题<input name="episodeHeading"></label><label>场次标题<input name="sceneHeading"></label><label>对白格式<input name="dialogue"></label><label>V.O. / OS 格式<input name="voiceOver"></label><label>特殊说话人<input name="specialSpeaker"></label><label>制作提示<input name="notes"></label></div><label>动作与环境规则<textarea name="action" rows="3"></textarea></label></section><section class="template-review-section"><h3>写作规则</h3><label>每行一条，可增删或修改<textarea name="writingRules" rows="9"></textarea></label></section><section class="template-review-section"><h3>格式示例</h3><label>仅用于学习排版与文风，不作为项目剧情<textarea name="sampleExcerpt" rows="12"></textarea></label></section><div class="dialog-actions"><button type="button" data-close-dialog class="ghost">取消导入</button><button type="submit" class="primary">确认保存</button></div></form></dialog>
+  <dialog id="libraryDialog" class="wide-dialog"><div class="library-wrap"><div class="dialog-head"><div><p class="eyebrow">IDEA EVIDENCE</p><h2>Market / Reality 灵感资料库</h2></div><button class="icon-btn" id="closeLibrary">×</button></div><div class="library-grid"><section><div class="action-row"><input id="knowledgeSearch" placeholder="搜索题材、热点或冲突…"><button class="ghost" id="searchKnowledge">搜索</button></div><div id="knowledgeList" class="knowledge-list"></div></section><aside><h3>手动加入资料</h3><form id="knowledgeForm" class="mini-form"><select name="library"><option value="reality">Reality 现实灵感</option><option value="market">Market 市场资料</option></select><input name="title" required placeholder="标题"><textarea name="summary" rows="4" placeholder="摘要、榜单信息或可迁移的故事机制"></textarea><input name="platform" placeholder="来源平台"><input name="source_url" placeholder="公开来源链接"><button class="primary">保存资料</button></form><h3 class="subhead">RSS 自动来源</h3><form id="sourceForm" class="mini-form"><input name="name" required placeholder="来源名称"><select name="library"><option value="reality">Reality</option><option value="market">Market</option></select><input name="url" required placeholder="RSS 地址"><button class="ghost">添加来源</button></form><button class="ghost full" id="updateSources">立即更新全部来源</button><div id="sourceList"></div></aside></div></div></dialog>
+  <dialog id="settingsDialog"><form method="dialog" id="settingsForm"><div class="dialog-head"><div><p class="eyebrow">MODEL CONNECTION</p><h2>模型 API 设置</h2></div><button type="button" data-close-dialog class="icon-btn">×</button></div><p class="muted">Key 仅保存到这台电脑的项目 <code>.env</code> 文件。不同供应商分别保存，切换回来时无需重复填写。</p><label>模型供应商<select name="provider"><option value="openai">OpenAI</option><option value="minimax">MiniMax（中国区）</option><option value="zhipu">智谱 GLM</option><option value="deepseek">DeepSeek</option><option value="qwen">通义千问（阿里云百炼）</option><option value="moonshot">Kimi / 月之暗面</option><option value="custom">其他 OpenAI-compatible API</option><option value="mock">离线演示模式</option></select></label><label>API Base URL<input name="base_url" placeholder="https://api.example.com/v1"></label><label>API Key<input name="api_key" type="password" autocomplete="off" placeholder="已配置时留空可保留原 Key"></label><p id="keyStatus" class="hint"></p><label>模型名称<input name="model" value="gpt-5.4-mini" placeholder="服务商提供的模型 ID"></label><div id="connectionResult" class="connection-result hidden"></div><div class="dialog-actions"><button type="button" data-close-dialog class="ghost">取消</button><button type="button" id="testConnection" class="ghost">测试连接</button><button type="submit" class="primary">保存设置</button></div></form></dialog>
+  <dialog id="exportDialog"><form method="dialog" id="exportForm"><div class="dialog-head"><div><p class="eyebrow">EXPORT DOCX</p><h2>导出小说或剧本</h2></div><button type="button" data-close-dialog class="icon-btn">×</button></div><p class="muted">选择文稿类型和需要导出的集数。每集只保留统一编号，不写分集小标题。</p><div class="export-type-picker"><label><input type="radio" name="type" value="novel" checked><span><strong>小说</strong><small>盐选阅读风格投稿稿</small></span></label><label><input type="radio" name="type" value="script"><span><strong>剧本</strong><small>专业策划＋人设表格＋中文DRAFT</small></span></label></div><div class="export-episode-head"><strong>选择集数</strong><div><button type="button" class="ghost" id="selectAllExportEpisodes">全选有内容</button><button type="button" class="ghost" id="clearExportEpisodes">清空</button></div></div><div id="exportEpisodeList" class="export-episode-list"></div><p id="exportSelectionHint" class="hint"></p><div class="dialog-actions"><button type="button" data-close-dialog class="ghost">取消</button><button type="submit" class="primary">导出 DOCX</button></div></form></dialog>
+  <div id="toast" class="toast"></div>
+  <div id="jobTray" class="job-tray hidden"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
