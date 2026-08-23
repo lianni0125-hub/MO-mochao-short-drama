@@ -1,9 +1,11 @@
-import { all, get, run, now, transaction } from "./db.js";
+import { all, detachLegacyStoryStateFromControls, get, run, now, transaction } from "./db.js";
 import { ARTIFACT_TITLES, canonicalRelationshipSubject, parseArtifact, parseProject } from "./domain.js";
 import { buildEpisodeArrangementPrompt, buildEpisodeBoundariesPrompt, buildEpisodeBoundaryPrompt, buildEpisodeNovelPrompt, buildPreviousNovelSummaryPrompt, buildSkillEpisodePrompt, buildPlanningSectionPrompt, buildStagePrompt } from "./prompts.js";
 import { generate } from "./llm.js";
 import { searchKnowledge } from "./knowledge.js";
 import { templateContext, templateWritingGuide } from "./templates.js";
+import { bootstrapCharacterMemory, compileMemoryContext, extractEpisodeMemory } from "./memory.js";
+import { embeddingConfigured } from "./embeddings.js";
 
 let working = false;
 const jobControllers=new Map();
@@ -11,7 +13,7 @@ let activeSignal=null;
 const parseJob = row => row ? { ...row, payload:JSON.parse(row.payload_json||"{}"), result:JSON.parse(row.result_json||"{}"),checkpoint:JSON.parse(row.checkpoint_json||"{}") } : null;
 const projectFor = id => parseProject(get("SELECT * FROM projects WHERE id=@id",{id}));
 const constraintsFor = id => all("SELECT * FROM constraints WHERE project_id=@id ORDER BY id",{id});
-const artifactsFor = id => all("SELECT * FROM artifacts WHERE project_id=@id ORDER BY id",{id}).map(parseArtifact);
+const artifactsFor = id => {detachLegacyStoryStateFromControls(id);return all("SELECT * FROM artifacts WHERE project_id=@id ORDER BY id",{id}).map(parseArtifact);};
 const lastScriptScene=(script,maxCharacters=1200)=>{
   const text=String(script||"").trim();if(!text)return "";
   const headings=[...text.matchAll(/^\s*\d+\s+(?:内景?|外景?)\s+.+$/gm)];
@@ -197,29 +199,39 @@ async function runOutlineBatched(job,project){
 }
 const episodeContext=(project,episode)=>{
   const constraints=constraintsFor(project.id),artifacts=artifactsFor(project.id);
-  const states=all("SELECT category,subject,value,status,source_episode FROM story_state WHERE project_id=@id AND status='active' AND (source_episode IS NULL OR source_episode<@episode)",{id:project.id,episode:episode.episode_no});
+  const states=[];
+  const memory={profiles:"",events:"",chains:"",entityCount:0,eventCount:0};
   const previous=get("SELECT id,episode_no,title,summary,novel,novel_summary,episode_plan,character_identifiers_json,script FROM episodes WHERE project_id=@pid AND episode_no=@no",{pid:project.id,no:episode.episode_no-1});
   const previousEnding=previous?.script?lastScriptScene(previous.script,1200):previous?.summary||"";
   const writingGuide=templateWritingGuide(templateContext(project));
   const previousNovelEnding=(previous?.novel||"").split(/\r?\n/).filter(Boolean).slice(-5).join("\n");
   let previousIdentifiers=[];try{previousIdentifiers=JSON.parse(previous?.character_identifiers_json||"[]");}catch{}if(!previousIdentifiers.length&&previous?.script)previousIdentifiers=extractCharacterIdentifiers(previous.script);
-  return {constraints,artifacts,states,previous,previousEnding,writingGuide,previousNovelEnding,previousIdentifiers};
+  return {constraints,artifacts,states,memory,previous,previousEnding,writingGuide,previousNovelEnding,previousIdentifiers};
 };
 const extractCharacterIdentifiers=script=>[...new Set(String(script||"").split(/\r?\n/).map(line=>line.trim().match(/^([^：\n]{1,30}?)(?:\s+V\.O\.|\s+OS)?：/)?.[1]?.trim()).filter(name=>name&&name!=="系统音"))];
 
 async function generateEpisodeNovel(project,episode){
-  const c=episodeContext(project,episode);
-  let previousNovelSummary=String(c.previous?.novel_summary||"").trim();
+  if(!embeddingConfigured())throw new Error("生成小说需要 Embedding API，请先完成配置");
+  let c=episodeContext(project,episode);
+  c.memory=await compileMemoryContext(project.id,episode,activeSignal);
+  if(!c.memory.entityCount){
+    const characterArtifact=get("SELECT * FROM artifacts WHERE project_id=@pid AND type='characters' AND status='approved'",{pid:project.id});
+    if(characterArtifact){await bootstrapCharacterMemory(project,characterArtifact,activeSignal);c=episodeContext(project,episode);c.memory=await compileMemoryContext(project.id,episode,activeSignal);}
+  }
   if(Number(episode.episode_no)>1&&!String(c.previous?.novel||"").trim())throw new Error(`请先生成并保存 EP${String(episode.episode_no-1).padStart(2,"0")} 小说，才能建立本集连续性`);
-  if(Number(episode.episode_no)>1&&String(c.previous?.novel||"").trim()&&!previousNovelSummary){
-    const summaryPrompt=buildPreviousNovelSummaryPrompt(c.previous);
-    const summaryResult=await generate({stage:"episode_novel_summary",project,prompt:summaryPrompt,extra:{episode},signal:activeSignal});
+  if(Number(episode.episode_no)>1&&!String(c.previous?.script||"").trim())throw new Error(`请先生成并保存 EP${String(episode.episode_no-1).padStart(2,"0")} 最终剧本，才能用正式剧情事件承接本集小说`);
+  if(Number(episode.episode_no)>1&&!Number(c.memory.recentCount||0))throw new Error(`EP${String(episode.episode_no-1).padStart(2,"0")} 尚无已提炼的最近事件，请先完成该集剧情记忆提炼`);
+  let previousNovelSummary="";
+  if(Number(episode.episode_no)>1){
+    run("UPDATE jobs SET message=@message WHERE project_id=@pid AND type IN ('episode_novel','episode','full_book') AND status='running'",{pid:project.id,message:`正在整理 EP${String(episode.episode_no-1).padStart(2,"0")} 小说连续性概要`});
+    const summaryPrompt=buildPreviousNovelSummaryPrompt(c.previous,{previousEvents:c.memory.previousEvents,previousLastEvent:c.memory.previousLastEvent});
+    const summaryResult=await generate({stage:"episode_novel_summary",project,prompt:summaryPrompt,extra:{episode,continuityAnchorSource:c.memory.previousEvents},signal:activeSignal});
     previousNovelSummary=String(summaryResult.output||"").trim();
     if(!previousNovelSummary)throw new Error(`EP${String(episode.episode_no-1).padStart(2,"0")} 小说连续性概要为空，未继续生成本集小说`);
     run("UPDATE episodes SET novel_summary=@summary,updated_at=@time WHERE id=@id",{summary:previousNovelSummary,time:now(),id:c.previous.id});
     run("INSERT INTO generations(project_id,stage,provider,model,prompt,output,status,input_tokens,output_tokens) VALUES(@pid,'episode_novel_summary',@provider,@model,@prompt,@output,'completed',@input,@out)",{pid:project.id,provider:summaryResult.provider,model:summaryResult.model,prompt:summaryPrompt,output:previousNovelSummary,input:summaryResult.usage.input_tokens||0,out:summaryResult.usage.output_tokens||0});
   }
-  const novelPrompt=buildEpisodeNovelPrompt(project,c.constraints,c.artifacts,episode,c.states,c.writingGuide,{previousNovelSummary,previousNovelEnding:c.previousNovelEnding});
+  const novelPrompt=buildEpisodeNovelPrompt(project,c.constraints,c.artifacts,episode,c.states,c.writingGuide,{previousNovelSummary,previousNovelEnding:c.previousNovelEnding,memory:c.memory});
   const novelResult=await generate({stage:"episode_novel",project,prompt:novelPrompt,extra:{episode,minEffectiveCharacters:1000,maxEffectiveCharacters:2000},signal:activeSignal,onAttempt:info=>{if(activeSignal?.aborted)return;const detail=info.retry?`，上一轮未通过：${String(info.lastError).slice(0,90)}`:"";run("UPDATE jobs SET message=@message WHERE project_id=@pid AND type IN ('episode_novel','episode','full_book') AND status='running'",{message:`正在生成 EP${String(episode.episode_no).padStart(2,"0")} 小说（第${info.attempt}/${info.total}轮）${detail}`,pid:project.id});}});
   const novel=String(novelResult.output||"").trim();
   if(!novel)throw new Error("模型没有返回小说中间稿，已保留原有内容，请重试");
@@ -238,6 +250,7 @@ async function generateEpisodeArrangement(project,episode){
   return {plan,provider:result.provider,model:result.model};
 }
 async function generateEpisodeScript(project,episode){
+  if(!embeddingConfigured())throw new Error("生成剧本的完整流程需要 Embedding API，请先完成配置");
   if(!String(episode.novel||"").trim())throw new Error("请先生成并确认小说中间稿");
   if(!String(episode.episode_plan||"").trim())throw new Error("请先生成并确认情绪和剧情安排");
   const c=episodeContext(project,episode);
@@ -251,8 +264,8 @@ async function generateEpisodeScript(project,episode){
   const identifiers=extractCharacterIdentifiers(result.output);
   run("UPDATE episodes SET script=@script,character_identifiers_json=@identifiers,status='drafted',updated_at=@time WHERE id=@id",{script:result.output,identifiers:JSON.stringify(identifiers),time:now(),id:episode.id});
   run("INSERT INTO generations(project_id,stage,provider,model,prompt,output,status,input_tokens,output_tokens) VALUES(@pid,'episode',@provider,@model,@prompt,@output,'completed',@input,@out)",{pid:project.id,provider:result.provider,model:result.model,prompt,output:result.output,input:result.usage.input_tokens||0,out:result.usage.output_tokens||0});
-  await extractEpisodeState(project,{...episode,script:result.output},activeSignal,false);
-  return {episode:episode.episode_no,provider:result.provider,model:result.model};
+  await extractEpisodeMemory(project,{...episode,script:result.output},activeSignal);
+  return {episode:episode.episode_no,provider:result.provider,model:result.model,memoryUpdated:true};
 }
 
 function normalizedStateText(value){
@@ -392,7 +405,7 @@ ${evidence.join("\n")}`;
 export async function writeEpisode(project,episode,job=null){
   const novel=await generateEpisodeNovel(project,episode);if(job?.type==="episode")run("UPDATE jobs SET progress=1,total=3,message='小说已保存，正在生成情绪与剧情安排' WHERE id=@id",{id:job.id});
   episode={...episode,novel:novel.novel};const arranged=await generateEpisodeArrangement(project,episode);if(job?.type==="episode")run("UPDATE jobs SET progress=2,total=3,message='剧情安排已保存，正在转换剧本' WHERE id=@id",{id:job.id});
-  const scripted=await generateEpisodeScript(project,{...episode,episode_plan:arranged.plan});if(job?.type==="episode")run("UPDATE jobs SET progress=3,total=3,message='剧本与故事状态已保存' WHERE id=@id",{id:job.id});return scripted;
+  const scripted=await generateEpisodeScript(project,{...episode,episode_plan:arranged.plan});if(job?.type==="episode")run("UPDATE jobs SET progress=3,total=3,message='剧本与剧情记忆已保存' WHERE id=@id",{id:job.id});return scripted;
 }
 function saveCheckpoint(jobId,checkpoint,message,progress){run("UPDATE jobs SET checkpoint_json=@checkpoint,message=@message,progress=COALESCE(@progress,progress) WHERE id=@id",{checkpoint:JSON.stringify(checkpoint),message,progress:progress==null?null:Number(progress),id:jobId});}
 async function writeFullBookEpisode(project,episode,job,checkpoint,overwrite){
@@ -411,6 +424,10 @@ async function writeFullBookEpisode(project,episode,job,checkpoint,overwrite){
 }
 async function execute(job){
   const project=projectFor(job.project_id); if(!project)throw new Error("项目不存在");
+  if(job.type==="memory_characters"){
+    const artifact=get("SELECT * FROM artifacts WHERE project_id=@pid AND type='characters'",{pid:project.id});if(!artifact)throw new Error("请先保存人物人设");
+    run("UPDATE jobs SET total=1,message='正在从已批准人设建立初始剧情记忆库' WHERE id=@id",{id:job.id});const result=await bootstrapCharacterMemory(project,artifact,activeSignal);run("UPDATE jobs SET progress=1,message=@message WHERE id=@id",{message:`已建立 ${result.characters} 个人物初始档案`,id:job.id});return result;
+  }
   if(job.type==="stage"&&job.target==="outline")return runOutlineBatched(job,project);
   if(job.type==="stage")return runStage(job,project);
   if(job.type==="planning_section")return runPlanningSection(job,project);
@@ -425,7 +442,13 @@ async function execute(job){
     run("UPDATE jobs SET progress=1 WHERE id=@id",{id:job.id});return result;
   }
   if(job.type==="episode_state_extract"){
-    const episode=get("SELECT * FROM episodes WHERE project_id=@pid AND episode_no=@no",{pid:project.id,no:Number(job.target)});if(!episode)throw new Error("该集不存在");if(!String(episode.script||"").trim())throw new Error("当前集还没有可提炼的剧本文本");run("UPDATE jobs SET total=1,message='正在提炼当前集故事状态' WHERE id=@id",{id:job.id});const result=await extractEpisodeState(project,episode,activeSignal,true);run("UPDATE jobs SET progress=1,message=@message WHERE id=@id",{message:`已提炼 EP${String(episode.episode_no).padStart(2,"0")} 故事状态`,id:job.id});return result;
+    if(!embeddingConfigured())throw new Error("未配置 Embedding API，无法提炼剧情事件");const episode=get("SELECT * FROM episodes WHERE project_id=@pid AND episode_no=@no",{pid:project.id,no:Number(job.target)});if(!episode)throw new Error("该集不存在");if(!String(episode.script||"").trim())throw new Error("当前集还没有可提炼的剧本文本");run("UPDATE jobs SET total=1,message='正在从当前集剧本重建剧情事件' WHERE id=@id",{id:job.id});const result=await extractEpisodeMemory(project,episode,activeSignal);run("UPDATE jobs SET progress=1,message=@message WHERE id=@id",{message:`已重建 EP${String(episode.episode_no).padStart(2,"0")} 剧情记忆`,id:job.id});return result;
+  }
+  if(job.type==="memory_rebuild"){
+    if(!embeddingConfigured())throw new Error("未配置 Embedding API，无法重建向量与剧情链");const requestedCutoff=Math.max(0,Number(job.payload?.cutoff)||0),rows=all("SELECT * FROM episodes WHERE project_id=@pid ORDER BY episode_no",{pid:project.id});let liveCutoff=0;for(const episode of rows){if(Number(episode.episode_no)!==liveCutoff+1||!String(episode.script||"").trim())break;liveCutoff++;}const cutoff=requestedCutoff?Math.min(requestedCutoff,liveCutoff):liveCutoff,episodes=rows.filter(item=>item.episode_no<=cutoff&&String(item.script||"").trim());if(!episodes.length)throw new Error("EP01没有剧本，无法建立链式剧情记忆");run("UPDATE jobs SET total=@total WHERE id=@id",{total:episodes.length,id:job.id});
+    if(Number(job.progress||0)===0)transaction(()=>{run("DELETE FROM memory_vectors WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_relationship_changes WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_relationships WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_secondary_characters WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_golden_ability_changes WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_golden_abilities WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_golden_changes WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_golden_fingers WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_prop_changes WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_important_props WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_chains WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_temporal_relations WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_events WHERE project_id=@pid",{pid:project.id});run("DELETE FROM memory_extractions WHERE project_id=@pid",{pid:project.id});});
+    for(let index=Math.max(0,Number(job.progress)||0);index<episodes.length;index++){const episode=episodes[index];run("UPDATE jobs SET message=@message WHERE id=@id",{message:`正在重建 EP${String(episode.episode_no).padStart(2,"0")} 向量与剧情链（${index+1}/${episodes.length}）`,id:job.id});await extractEpisodeMemory(project,episode,activeSignal);run("UPDATE jobs SET progress=@progress WHERE id=@id",{progress:index+1,id:job.id});}
+    return {episodes:episodes.length};
   }
   if(job.type==="episode"){const episode=get("SELECT * FROM episodes WHERE project_id=@pid AND episode_no=@no",{pid:project.id,no:Number(job.target)});if(!episode)throw new Error("该集不存在，请先生成逐集框架");run("UPDATE jobs SET total=3,message='正在生成小说中间稿' WHERE id=@id",{id:job.id});return writeEpisode(project,episode,job);}
   if(job.type==="full_book"){

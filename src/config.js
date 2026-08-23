@@ -15,6 +15,10 @@ export const config = {
   llmProvider: process.env.LLM_PROVIDER || (process.env.OPENAI_API_KEY ? "openai" : "mock"),
   openaiModel: process.env.OPENAI_MODEL || "gpt-5.4-mini",
   baseUrl: process.env.LLM_BASE_URL || "",
+  embeddingProvider: process.env.EMBEDDING_PROVIDER || "custom",
+  embeddingBaseUrl: process.env.EMBEDDING_BASE_URL || "",
+  embeddingModel: process.env.EMBEDDING_MODEL || "",
+  embeddingApiKey: process.env.EMBEDDING_API_KEY || "",
   providerKeys: {
     openai: process.env.OPENAI_API_KEY || "",
     minimax: process.env.MINIMAX_API_KEY || "",
@@ -37,7 +41,21 @@ export const providerDefaults = {
   mock: { label:"离线演示模式", baseUrl:"", model:"local-demo", protocol:"mock" }
 };
 
+export const embeddingProviderDefaults = {
+  openai: {label:"OpenAI Embedding",baseUrl:"https://api.openai.com/v1",model:"text-embedding-3-small"},
+  google: {label:"Google Gemini Embedding",baseUrl:"https://generativelanguage.googleapis.com/v1beta",model:"gemini-embedding-001",protocol:"gemini"},
+  zhipu: {label:"智谱 Embedding",baseUrl:"https://open.bigmodel.cn/api/paas/v4",model:"embedding-3"},
+  qwen: {label:"通义千问 Embedding",baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1",model:"text-embedding-v4"},
+  custom: {label:"其他 OpenAI-compatible Embedding",baseUrl:"",model:""},
+  mock: {label:"离线测试",baseUrl:"",model:"local-embedding"}
+};
+
 export function activeProvider() {
   const preset = providerDefaults[config.llmProvider] || providerDefaults.custom;
   return { ...preset, id:config.llmProvider, baseUrl:config.baseUrl || preset.baseUrl, model:config.openaiModel || preset.model, apiKey:config.providerKeys[config.llmProvider] || "" };
+}
+
+export function activeEmbeddingProvider(){
+  const preset=embeddingProviderDefaults[config.embeddingProvider]||embeddingProviderDefaults.custom;
+  return {...preset,id:config.embeddingProvider,baseUrl:config.embeddingBaseUrl||preset.baseUrl,model:config.embeddingModel||preset.model,apiKey:config.embeddingApiKey||""};
 }

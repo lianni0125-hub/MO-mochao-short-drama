@@ -3,8 +3,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import express from "express";
 import multer from "multer";
-import { activeProvider, config, providerDefaults } from "./config.js";
-import { all, get, run, now, transaction } from "./db.js";
+import { activeEmbeddingProvider, activeProvider, config, embeddingProviderDefaults, providerDefaults } from "./config.js";
+import { all, detachLegacyStoryStateFromControls, get, run, now, transaction } from "./db.js";
 import { ARTIFACT_TITLES, STAGES, canonicalRelationshipSubject, parseArtifact, parseProject } from "./domain.js";
 import { buildCharacterImagePromptPrompt, buildStagePrompt } from "./prompts.js";
 import { generate, testConnection } from "./llm.js";
@@ -12,13 +12,15 @@ import { analyzeDocx, exportProjectDocx } from "./documents.js";
 import { searchKnowledge, updateAllSources, updateSource } from "./knowledge.js";
 import { cancelJob, continueJob, enqueueJob, listJobs, writeEpisode } from "./jobs.js";
 import { listTemplates, templateContext, templateWritingGuide } from "./templates.js";
+import { memorySnapshot } from "./memory.js";
+import { embeddingConfigured, testEmbeddingConnection } from "./embeddings.js";
 
 const upload = multer({ dest: config.uploadsDir, limits: { fileSize: 30 * 1024 * 1024 } });
 export const app = express();
 app.use(express.json({ limit: "5mb" }));
 
 const projectRow = id => parseProject(get("SELECT * FROM projects WHERE id=@id AND deleted_at IS NULL", { id: Number(id) }));
-const artifactsFor = id => all("SELECT * FROM artifacts WHERE project_id=@id ORDER BY id", { id: Number(id) }).map(parseArtifact);
+const artifactsFor = id => {detachLegacyStoryStateFromControls(id);return all("SELECT * FROM artifacts WHERE project_id=@id ORDER BY id", { id: Number(id) }).map(parseArtifact);};
 const constraintsFor = id => all("SELECT * FROM constraints WHERE project_id=@id ORDER BY id", { id: Number(id) });
 
 function requireProject(req, res, next) {
@@ -41,7 +43,9 @@ app.get("/api/health", (_req, res) => { const p=activeProvider(); res.json({ ok:
 app.get("/api/settings/llm", (_req, res) => res.json({
   provider: activeProvider().id, model: activeProvider().model, baseUrl:activeProvider().baseUrl,
   apiKeyConfigured: Boolean(activeProvider().apiKey), apiKeyHint: activeProvider().apiKey ? `••••••••${activeProvider().apiKey.slice(-4)}` : "",
-  providers:Object.entries(providerDefaults).map(([id,p])=>({id,label:p.label,baseUrl:p.baseUrl,model:p.model}))
+  providers:Object.entries(providerDefaults).map(([id,p])=>({id,label:p.label,baseUrl:p.baseUrl,model:p.model})),
+  embedding:(()=>{const p=activeEmbeddingProvider();return {provider:p.id,baseUrl:p.baseUrl,model:p.model,apiKeyConfigured:Boolean(p.apiKey),apiKeyHint:p.apiKey?`••••••••${p.apiKey.slice(-4)}`:""}})(),
+  embeddingProviders:Object.entries(embeddingProviderDefaults).map(([id,p])=>({id,label:p.label,baseUrl:p.baseUrl,model:p.model}))
 }));
 app.put("/api/settings/llm", (req, res) => {
   const provider = providerDefaults[req.body.provider] ? req.body.provider : "custom";
@@ -68,6 +72,19 @@ app.post("/api/settings/llm/test", async(req,res)=>{
   try{const result=await testConnection({providerId,apiKey,baseUrl:String(req.body.base_url||preset.baseUrl).trim().replace(/\/$/,""),model:String(req.body.model||preset.model).trim()});res.json({...result,providerLabel:preset.label});}
   catch(error){res.status(400).json({ok:false,error:error.message||String(error)});}
 });
+app.put("/api/settings/embedding",(req,res)=>{
+  const provider=embeddingProviderDefaults[req.body.provider]?req.body.provider:"custom",preset=embeddingProviderDefaults[provider];
+  const model=String(req.body.model||preset.model).trim(),baseUrl=String(req.body.base_url||preset.baseUrl).trim().replace(/\/$/,""),supplied=String(req.body.api_key||"").trim(),key=supplied||config.embeddingApiKey||"";
+  if(provider!=="mock"&&!key)return res.status(400).json({error:"请填写 Embedding API Key"});
+  if(provider==="custom"&&!baseUrl)return res.status(400).json({error:"请填写 Embedding Base URL"});
+  if(!model)return res.status(400).json({error:"请填写 Embedding 模型名称"});
+  const envPath=path.join(config.root,".env"),existing=fs.existsSync(envPath)?fs.readFileSync(envPath,"utf8").split(/\r?\n/):[],values=new Map(existing.filter(Boolean).map(line=>{const i=line.indexOf("=");return i>0?[line.slice(0,i),line.slice(i+1)]:[line,""];}));
+  values.set("EMBEDDING_PROVIDER",provider);values.set("EMBEDDING_BASE_URL",baseUrl);values.set("EMBEDDING_MODEL",model);if(key)values.set("EMBEDDING_API_KEY",key);
+  fs.writeFileSync(envPath,[...values].map(([k,v])=>`${k}=${v}`).join("\n")+"\n",{encoding:"utf8",mode:0o600});
+  config.embeddingProvider=provider;config.embeddingBaseUrl=baseUrl;config.embeddingModel=model;if(key)config.embeddingApiKey=key;
+  res.json({provider,providerLabel:preset.label,model,baseUrl,apiKeyConfigured:Boolean(key),apiKeyHint:key?`••••••••${key.slice(-4)}`:""});
+});
+app.post("/api/settings/embedding/test",async(req,res)=>{try{res.json(await testEmbeddingConnection(req.body));}catch(error){res.status(400).json({ok:false,error:error.message||String(error)});}});
 app.get("/api/meta", (_req, res) => res.json({ stages: STAGES }));
 
 function purgeExpiredProjects(){
@@ -140,6 +157,7 @@ app.get("/api/projects/:id", requireProject, (req, res) => res.json({
   constraints: constraintsFor(req.project.id), artifacts: artifactsFor(req.project.id),
   episodes: all("SELECT * FROM episodes WHERE project_id=@id ORDER BY episode_no", { id: req.project.id }),
   storyState: all("SELECT * FROM story_state WHERE project_id=@id ORDER BY category,subject", { id: req.project.id }),
+  storyMemory: memorySnapshot(req.project.id),
   templates:listTemplates(req.project.id),
   characterImages:all("SELECT id,character_index,character_name,source,prompt,created_at FROM character_images WHERE project_id=@id ORDER BY character_index",{id:req.project.id}).map(x=>({...x,url:`/character-images/${x.id}`}))
 }));
@@ -169,7 +187,7 @@ app.post("/api/projects/:id/jobs/:jobId/retry",requireProject,(req,res)=>{try{
     const originalStart=old.target==="all"?1:Number(old.target),next=originalStart+Number(old.progress||0),last=get("SELECT MAX(episode_no) last FROM episodes WHERE project_id=@id",{id:req.project.id})?.last||0;
     if(next>last)return res.status(400).json({error:"该任务已没有未完成的分集"});
     target=String(next);mode="继续";
-  }else if(!["episode_boundary","episode","episode_novel","episode_arrangement","episode_script","episode_state_extract"].includes(type))return res.status(400).json({error:"该任务类型暂不支持继续或重试"});
+  }else if(!["episode_boundary","episode","episode_novel","episode_arrangement","episode_script","episode_state_extract","memory_rebuild"].includes(type))return res.status(400).json({error:"该任务类型暂不支持继续或重试"});
   const job=enqueueJob(req.project.id,type,target,JSON.parse(old.payload_json||"{}"));
   res.status(202).json({mode,job,from_job_id:old.id});
 }catch(error){res.status(400).json({error:error.message||String(error)});}});
@@ -186,12 +204,16 @@ app.post("/api/projects/:id/jobs/episode-boundaries/:no",requireProject,(req,res
 app.post("/api/projects/:id/jobs/episode-boundary/:no/:field",requireProject,(req,res)=>{if(!["required_plot","must_not_reveal"].includes(req.params.field))return res.status(400).json({error:"未知写作边界字段"});res.status(202).json(enqueueJob(req.project.id,"episode_boundary",`${Number(req.params.no)}:${req.params.field}`));});
 app.post("/api/projects/:id/jobs/required-plot-chain/:start",requireProject,(req,res)=>{const start=Number(req.params.start),last=get("SELECT MAX(episode_no) last FROM episodes WHERE project_id=@id",{id:req.project.id})?.last||0;if(!Number.isInteger(start)||start<1||start>last)return res.status(400).json({error:"起始集数无效"});res.status(202).json(enqueueJob(req.project.id,"连锁重生成必须发生",String(start)));});
 app.post("/api/projects/:id/jobs/must-not-reveal-all",requireProject,(req,res)=>{const count=get("SELECT COUNT(*) count FROM episodes WHERE project_id=@id",{id:req.project.id})?.count||0;if(!count)return res.status(400).json({error:"请先生成分集梗概"});res.status(202).json(enqueueJob(req.project.id,"逐集重生成不得揭示","all"));});
-app.post("/api/projects/:id/jobs/episode/:no", requireProject, (req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode",String(Number(req.params.no)))));
-app.post("/api/projects/:id/jobs/episode-novel/:no", requireProject, (req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode_novel",String(Number(req.params.no)))));
+const requireEmbedding=(req,res,next)=>embeddingConfigured()?next():res.status(428).json({error:"该流程需要 Embedding API，请先前往模型设置完成配置",code:"EMBEDDING_REQUIRED"});
+app.post("/api/projects/:id/jobs/episode/:no", requireProject,requireEmbedding,(req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode",String(Number(req.params.no)))));
+app.post("/api/projects/:id/jobs/episode-novel/:no", requireProject,requireEmbedding,(req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode_novel",String(Number(req.params.no)))));
 app.post("/api/projects/:id/jobs/episode-arrangement/:no", requireProject, (req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode_arrangement",String(Number(req.params.no)))));
-app.post("/api/projects/:id/jobs/episode-script/:no", requireProject, (req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode_script",String(Number(req.params.no)))));
-app.post("/api/projects/:id/jobs/episode-state/:no", requireProject, (req,res)=>{const no=Number(req.params.no),episode=get("SELECT script FROM episodes WHERE project_id=@pid AND episode_no=@no",{pid:req.project.id,no});if(!episode)return res.status(404).json({error:"该集不存在"});if(!String(episode.script||"").trim())return res.status(400).json({error:"当前集还没有可提炼的剧本文本"});res.status(202).json(enqueueJob(req.project.id,"episode_state_extract",String(no)))});
-app.post("/api/projects/:id/jobs/full-book", requireProject, (req,res)=>{
+app.post("/api/projects/:id/jobs/episode-script/:no", requireProject,requireEmbedding,(req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode_script",String(Number(req.params.no)))));
+app.post("/api/projects/:id/jobs/episode-state/:no", requireProject,requireEmbedding,(req,res)=>{const no=Number(req.params.no),episode=get("SELECT script FROM episodes WHERE project_id=@pid AND episode_no=@no",{pid:req.project.id,no});if(!episode)return res.status(404).json({error:"该集不存在"});if(!String(episode.script||"").trim())return res.status(400).json({error:"当前集还没有可提炼的剧本文本"});res.status(202).json(enqueueJob(req.project.id,"episode_state_extract",String(no)))});
+function memoryRebuildRange(projectId){const episodes=all("SELECT episode_no,script FROM episodes WHERE project_id=@id ORDER BY episode_no",{id:projectId}),written=new Set(episodes.filter(item=>String(item.script||"").trim()).map(item=>Number(item.episode_no))),maxWritten=Math.max(0,...written);let cutoff=0;while(written.has(cutoff+1))cutoff++;const gap=maxWritten>cutoff?cutoff+1:null,ignoredWritten=gap?[...written].filter(no=>no>=gap).length:0;return {cutoff,gap,maxWritten,ignoredWritten,totalPlanned:episodes.length};}
+app.get("/api/projects/:id/memory-rebuild-preview",requireProject,requireEmbedding,(req,res)=>res.json(memoryRebuildRange(req.project.id)));
+app.post("/api/projects/:id/jobs/memory-rebuild",requireProject,requireEmbedding,(req,res)=>{const range=memoryRebuildRange(req.project.id);if(!range.cutoff)return res.status(400).json({error:range.gap?`EP01没有剧本，无法建立链式剧情记忆`:"还没有可提炼的剧本"});if(range.gap&&!req.body.confirm_gap)return res.status(409).json({error:`检测到 EP${String(range.gap).padStart(2,"0")} 剧本缺失，只能重建至 EP${String(range.cutoff).padStart(2,"0")}`,code:"MEMORY_GAP_CONFIRMATION_REQUIRED",...range});res.status(202).json(enqueueJob(req.project.id,"memory_rebuild","all",{cutoff:range.cutoff,gap:range.gap}));});
+app.post("/api/projects/:id/jobs/full-book", requireProject,requireEmbedding, (req,res)=>{
   const count=get("SELECT COUNT(*) count FROM episodes WHERE project_id=@id",{id:req.project.id})?.count||0;
   if(!count)return res.status(400).json({error:"请先生成完整逐集框架"});
   const startEpisode=req.body.start_episode==null?1:Number(req.body.start_episode);
@@ -219,6 +241,7 @@ app.post("/api/projects/:id/artifacts/:type/approve", requireProject, (req, res)
     const planning=JSON.parse(artifact.content_json||"{}"),approvedTitle=String(planning.title||"").trim();
     if(approvedTitle)run("UPDATE projects SET title=@title,updated_at=@time WHERE id=@id",{title:approvedTitle,time:now(),id:req.project.id});
   }
+  if(req.params.type==="characters")enqueueJob(req.project.id,"memory_characters","approved");
   const idx = STAGES.findIndex(x => x.artifact === req.params.type);
   const next = STAGES[Math.min(idx + 1, STAGES.length - 1)]?.id || "writing";
   run("UPDATE projects SET current_stage=@stage,updated_at=@time WHERE id=@id", { stage: next, time: now(), id: req.project.id });

@@ -141,10 +141,14 @@ function validatePlainOutput(stage,output,extra={}){
     if(labelledSpeech>=5)return `小说反复使用了刻板的“说/问：台词”格式（共 ${labelledSpeech} 处）`;
   }
   if(stage==="episode_novel_summary"){
-    const required=["关键事件：","人物与状态：","结尾局面：","未完成行动："];
+    const required=["关键事件：","人物与状态：","精确锚点：","结尾局面："];
     const missing=required.filter(label=>!text.split(/\r?\n/).some(line=>line.trim().startsWith(label)));
     if(missing.length)return `小说连续性概要缺少固定字段：${missing.join("、")}`;
     if(count<100||count>600)return `小说连续性概要有效字符 ${count}，应保持在 100–600 字`;
+    const anchorLine=text.split(/\r?\n/).find(line=>line.trim().startsWith("精确锚点："))||"",anchorSource=String(extra.continuityAnchorSource||"");
+    const explicitTokens=anchorLine.match(/(?:上上周|上周|本周|下周|前天|昨天|今天|明天|后天|大后天|次日|翌日|前年|去年|今年|明年|后年|\d+(?:\.\d+)?%?|[一二两三四五六七八九十百千万]+(?:分钟|小时|天|日|周|个月|月|年)(?:前|后|内)?)/g)||[];
+    const unsupported=[...new Set(explicitTokens.filter(token=>!anchorSource.includes(token)))];
+    if(unsupported.length)return `小说连续性概要的精确锚点擅自增加了最终事件账本不支持的时间或数值：${unsupported.join("、")}`;
   }
   if(stage==="episode_arrangement"){
     const required=["情绪走向","情绪节点","剧情安排","逻辑推理"];
@@ -223,11 +227,13 @@ function mock(stage, project, extra = {}) {
   if(stage==="episode_boundaries_text")return "【必须发生】完成本集梗概中的关键行动、冲突与状态变化；准确抵达既定钩子\n【不得揭示】无";
   if(stage==="episode_boundary_text")return "完成本集梗概中的关键行动、冲突与状态变化；准确抵达既定钩子";
   if(stage==="episode_plan_text")return "【场景1】核心场景｜人物面对迫近问题\n必要动作：用最少环境与道具建立处境。\n对白回合：提出要求，对方拒绝，压力升级并作出选择。\n【覆盖检查】必须发生均落入节拍，不提前揭示。\n【钩子落点】既定危险或信息出现后立刻停。";
-  if(stage==="episode_novel_summary")return "关键事件：上一集的核心冲突已经发生并造成明确结果。\n人物与状态：人物关系、认知、能力与关键道具保持上一集结尾状态。\n结尾局面：主角正面对尚未结束的新局面。\n未完成行动：主角已经决定继续处理眼前危机。";
+  if(stage==="episode_novel_summary")return "关键事件：上一章的核心冲突已经发生并造成明确结果。\n人物与状态：人物关系、认知、能力与关键道具保持上一章结尾状态。\n精确锚点：无。\n结尾局面：主角正面对尚未结束的现场局面，并准备执行已经启动的即时行动。";
   if(stage==="episode_novel")return `我被逼到核心场景的角落，眼前的问题已经没有退路。对手步步紧逼，我只能抓住最后的机会。\n\n「这件事还没结束。」我迎着他走过去，「你欠下的结果，现在该兑现了。」`;
   if(stage==="episode_arrangement")return `【情绪走向】\n本集情绪曲线：压抑（危机逼近）→ 转机（获得行动机会）→ cliffhanger（决定行动）\n节奏比例：约7:3，前段压透，后段出现转机并决定行动\n\n【情绪节点】\n压透阶段：危机被推到无法回避\n转机：主角获得明确破局机会\ncliffhanger：主角决定立即行动\n\n【剧情安排】\n1 外 核心场景 日\n（承接既定事件+冲突升级+获得转机+主角决定行动，cliffhanger）\n\n【逻辑推理】\n1. 前一事件如何引发下一事件？→ 前一事件的结果直接迫使主角采取行动。\n2. 主角为什么决定行动？→ 现实危机使其没有退路。\n逻辑检查：✓ 无问题`;
   if (stage === "episode") return `EP${String(extra.episode?.episode_no || 1).padStart(2, "0")}\n\n1 外 核心场景 日\n\n承接上一集的危机，人物立即采取行动。\n\n主角：事情没有我们想的那么简单。\n\n远处传来异响，所有人同时停下动作。\n\n一个本不该出现在这里的人，缓缓走进众人的视线。`;
   if (stage === "state_update") return { items: [] };
+  if(stage==="memory_characters")return {characters:[{name:"待定",aliases:[],initial_identity:"故事开始时的核心人物",personality:"面对现实压力会先判断局势，再作出明确行动",backstory:""}]};
+  if(stage==="memory_events"){const quote="承接上一集的危机，人物立即采取行动。";return String(extra.episode?.script||"").includes(quote)?{events:[{order:1,event_type:"event",subject:"主角",action:"采取行动",object_text:"应对上一集遗留危机",qualifier_text:"",result_text:"开始处理眼前问题",location:"核心场景",time_text:"日",summary:"主角开始采取行动处理上一集遗留危机",participants:["主角"],source_quote:quote,follows_candidate_id:null,relation:"无"}]}:{events:[]};}
   if (stage === "quality") return { passed: true, issues: [], suggestions: ["当前为离线演示结果；配置真实模型后可执行语义质检。"] };
   return {};
 }
@@ -244,7 +250,7 @@ export async function generate({ stage, project, prompt, extra = {}, schema = nu
     return { provider: "mock", model: "local-demo", output: mock(stage, project, extra), usage: {} };
   }
   schema ||= schemas[stage];
-  const timeoutMs=stage==="outline"?480000:stage==="outline_chunk"?240000:stage==="episode"?180000:stage==="episode_novel"?90000:stage==="episode_plan_text"?90000:stage==="episode_boundary_text"?90000:stage==="state_update"?90000:["scene_treatment_text","episode_boundaries_text","character_image_prompt","episode_novel_summary"].includes(stage)?60000:180000;
+  const timeoutMs=stage==="outline"?480000:stage==="outline_chunk"?240000:stage==="episode"?180000:stage==="episode_novel"?90000:stage==="episode_plan_text"?90000:stage==="episode_boundary_text"?90000:["state_update","memory_characters","memory_events"].includes(stage)?90000:["scene_treatment_text","episode_boundaries_text","character_image_prompt","episode_novel_summary"].includes(stage)?60000:180000;
   const client = new OpenAI({ apiKey:provider.apiKey, ...(provider.baseUrl ? { baseURL:provider.baseUrl } : {}), timeout:timeoutMs, maxRetries:0 });
   if (provider.protocol === "responses") {
     let lastError,previousOutput="";
@@ -270,8 +276,8 @@ export async function generate({ stage, project, prompt, extra = {}, schema = nu
   const maxAttempts=stage==="episode"?5:stage==="episode_novel"?3:2;
   for(let attempt=0;attempt<maxAttempts;attempt++){
     await onAttempt?.({attempt:attempt+1,total:maxAttempts,retry:attempt>0,lastError:lastError?.message||""});
-    const outputLimit=stage==="outline"?32000:stage==="outline_chunk"?9000:stage==="planning"?2500:stage==="planning_section"?1200:stage==="episode_boundaries_text"?1200:stage==="episode_boundary_text"?(extra.boundaryField==="required_plot"?5000:1200):stage==="episode_plan_text"?2500:stage==="scene_treatment_text"?1200:stage==="state_update"?2000:stage==="character_image_prompt"?1600:stage==="episode_novel_summary"?1200:stage==="characters"?6000:stage==="episode_novel"?5000:stage==="episode"?6000:8000;
-    const retryInstruction=attempt?(schema?"上一次输出无法解析。这一次请特别检查所有引号、逗号、数组和对象是否完整闭合。":repairInstruction(stage,lastError?.message,extra)):"";
+    const outputLimit=stage==="outline"?32000:stage==="outline_chunk"?9000:stage==="planning"?2500:stage==="planning_section"?1200:stage==="episode_boundaries_text"?1200:stage==="episode_boundary_text"?(extra.boundaryField==="required_plot"?5000:1200):stage==="episode_plan_text"?2500:stage==="scene_treatment_text"?1200:stage==="state_update"?2000:stage==="character_image_prompt"?1600:stage==="episode_novel_summary"?1200:stage==="memory_links"?2500:stage==="memory_dimensions"?4500:stage==="memory_events"?6000:stage==="memory_characters"?4500:stage==="characters"?6000:stage==="episode_novel"?5000:stage==="episode"?6000:8000;
+    const retryInstruction=attempt?(schema?(/timed out|timeout|超时/i.test(lastError?.message||"")?"上一次请求超时且没有取得可用输出。本次继续执行同一任务，保持范围不变，直接完整返回要求的 JSON。":"上一次输出无法解析。这一次请特别检查所有引号、逗号、数组和对象是否完整闭合。\n上一轮问题："+(lastError?.message||"未知")):repairInstruction(stage,lastError?.message,extra)):"";
     const messages=attempt&&typeof output==="string"&&output.trim()?(["episode_novel","episode"].includes(stage)?[{role:"user",content:compactRevisionPrompt(stage,output,retryInstruction,extra)}]:[{role:"user",content:prompt+jsonInstruction},{role:"assistant",content:output},{role:"user",content:retryInstruction}]):[{role:"user",content:prompt+jsonInstruction+(retryInstruction?`\n\n${retryInstruction}`:"")}];
     const request={model:provider.model,messages};
     if(["scene_treatment_text","episode_boundaries_text","episode_boundary_text"].includes(stage))request.temperature=0.4;
@@ -280,7 +286,7 @@ export async function generate({ stage, project, prompt, extra = {}, schema = nu
     if(provider.id==="minimax")request.max_completion_tokens=outputLimit;else request.max_tokens=outputLimit;
     try{response=await client.chat.completions.create(request,signal?{signal}:undefined);}
     catch(error){
-      if(["scene_treatment_text","episode_boundaries_text","episode_boundary_text","episode_plan_text","episode_novel","episode"].includes(stage)&&attempt<maxAttempts-1&&!signal?.aborted){lastError=error;continue;}
+      if(["scene_treatment_text","episode_boundaries_text","episode_boundary_text","episode_plan_text","episode_novel","episode","memory_events","memory_dimensions","memory_links","memory_characters"].includes(stage)&&attempt<maxAttempts-1&&!signal?.aborted){lastError=error;continue;}
       throw error;
     }
     const choice=response.choices?.[0],content=choice?.message?.content||"";
