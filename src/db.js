@@ -167,6 +167,25 @@ CREATE TABLE IF NOT EXISTS memory_prop_changes (
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
   UNIQUE(project_id,episode_no,prop_name,summary)
 );
+CREATE TABLE IF NOT EXISTS memory_resources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, owner TEXT NOT NULL,
+  canonical_name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '', amount_text TEXT NOT NULL DEFAULT '',
+  unit TEXT NOT NULL DEFAULT '', availability TEXT NOT NULL DEFAULT '', current_state TEXT NOT NULL DEFAULT '',
+  first_episode INTEGER NOT NULL DEFAULT 0, latest_episode INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  UNIQUE(project_id,owner,canonical_name)
+);
+CREATE TABLE IF NOT EXISTS memory_resource_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, episode_no INTEGER NOT NULL,
+  change_order INTEGER NOT NULL DEFAULT 0, owner TEXT NOT NULL, resource_name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT '', change_type TEXT NOT NULL DEFAULT '', amount_text TEXT NOT NULL DEFAULT '',
+  unit TEXT NOT NULL DEFAULT '', availability TEXT NOT NULL DEFAULT '', current_state TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL, source_quote TEXT NOT NULL DEFAULT '', temporal_scope TEXT NOT NULL DEFAULT 'current',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  UNIQUE(project_id,episode_no,owner,resource_name,summary)
+);
 CREATE TABLE IF NOT EXISTS memory_golden_abilities (
   id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, golden_name TEXT NOT NULL,
   canonical_name TEXT NOT NULL, owner TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
@@ -206,7 +225,8 @@ CREATE TABLE IF NOT EXISTS memory_temporal_relations (
   episode_no INTEGER NOT NULL, marker_order INTEGER NOT NULL DEFAULT 0, marker_text TEXT NOT NULL,
   relation TEXT NOT NULL DEFAULT 'unknown', anchor_event_id INTEGER, anchor_label TEXT NOT NULL DEFAULT '',
   timeline_type TEXT NOT NULL DEFAULT 'main', marker_kind TEXT NOT NULL DEFAULT 'relative',
-  precision TEXT NOT NULL DEFAULT 'relative', source_quote TEXT NOT NULL DEFAULT '',
+  precision TEXT NOT NULL DEFAULT 'relative', relation_role TEXT NOT NULL DEFAULT 'occurrence',
+  target_label TEXT NOT NULL DEFAULT '', source_quote TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY(event_id) REFERENCES memory_events(id) ON DELETE CASCADE,
@@ -222,6 +242,8 @@ CREATE INDEX IF NOT EXISTS idx_memory_vectors_project_type ON memory_vectors(pro
 CREATE INDEX IF NOT EXISTS idx_memory_relationship_changes_project ON memory_relationship_changes(project_id,episode_no,change_order);
 CREATE INDEX IF NOT EXISTS idx_memory_golden_changes_project ON memory_golden_changes(project_id,episode_no,change_order);
 CREATE INDEX IF NOT EXISTS idx_memory_prop_changes_project ON memory_prop_changes(project_id,episode_no,change_order);
+CREATE INDEX IF NOT EXISTS idx_memory_resources_project ON memory_resources(project_id,active,owner);
+CREATE INDEX IF NOT EXISTS idx_memory_resource_changes_project ON memory_resource_changes(project_id,episode_no,change_order);
 CREATE INDEX IF NOT EXISTS idx_memory_temporal_project ON memory_temporal_relations(project_id,episode_no,event_id);
 CREATE TABLE IF NOT EXISTS templates (
   id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER,
@@ -264,10 +286,20 @@ CREATE TABLE IF NOT EXISTS jobs (
   type TEXT NOT NULL, target TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'queued',
   progress INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 1,
   message TEXT DEFAULT '', error TEXT DEFAULT '', payload_json TEXT NOT NULL DEFAULT '{}', result_json TEXT DEFAULT '{}',
+  auto_retry_limit INTEGER NOT NULL DEFAULT 5,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, started_at TEXT, finished_at TEXT,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_project_created ON jobs(project_id, id DESC);
+CREATE TABLE IF NOT EXISTS job_step_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, project_id INTEGER NOT NULL,
+  episode_no INTEGER, stage TEXT NOT NULL DEFAULT '', round_no INTEGER,
+  outcome TEXT NOT NULL, error_type TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '',
+  duration_ms INTEGER NOT NULL DEFAULT 0, started_at TEXT, finished_at TEXT NOT NULL,
+  FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_job_step_logs_job ON job_step_logs(job_id,id);
 `);
 
 try { db.exec("ALTER TABLE sources ADD COLUMN library TEXT NOT NULL DEFAULT 'reality'"); } catch {}
@@ -286,7 +318,9 @@ try { db.exec("ALTER TABLE episodes ADD COLUMN character_identifiers_json TEXT D
 try { db.exec("ALTER TABLE jobs ADD COLUMN elapsed_ms INTEGER NOT NULL DEFAULT 0"); } catch {}
 try { db.exec("ALTER TABLE jobs ADD COLUMN attempt_started_at TEXT"); } catch {}
 try { db.exec("ALTER TABLE jobs ADD COLUMN auto_retry_count INTEGER NOT NULL DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE jobs ADD COLUMN auto_retry_limit INTEGER NOT NULL DEFAULT 5"); } catch {}
 try { db.exec("ALTER TABLE jobs ADD COLUMN checkpoint_json TEXT NOT NULL DEFAULT '{}'"); } catch {}
+try { db.exec("ALTER TABLE jobs ADD COLUMN step_started_at TEXT"); } catch {}
 try { db.exec("ALTER TABLE memory_events ADD COLUMN scene_no INTEGER NOT NULL DEFAULT 1"); } catch {}
 try { db.exec("ALTER TABLE memory_events ADD COLUMN source_line_start INTEGER"); } catch {}
 try { db.exec("ALTER TABLE memory_events ADD COLUMN source_line_end INTEGER"); } catch {}
@@ -298,6 +332,8 @@ try { db.exec("ALTER TABLE memory_events ADD COLUMN embedded_at TEXT"); } catch 
 try { db.exec("ALTER TABLE memory_events ADD COLUMN timeline_type TEXT NOT NULL DEFAULT 'main'"); } catch {}
 try { db.exec("ALTER TABLE memory_temporal_relations ADD COLUMN marker_kind TEXT NOT NULL DEFAULT 'relative'"); } catch {}
 try { db.exec("ALTER TABLE memory_temporal_relations ADD COLUMN precision TEXT NOT NULL DEFAULT 'relative'"); } catch {}
+try { db.exec("ALTER TABLE memory_temporal_relations ADD COLUMN relation_role TEXT NOT NULL DEFAULT 'occurrence'"); } catch {}
+try { db.exec("ALTER TABLE memory_temporal_relations ADD COLUMN target_label TEXT NOT NULL DEFAULT ''"); } catch {}
 try { db.exec("ALTER TABLE memory_events ADD COLUMN timeline_label TEXT DEFAULT ''"); } catch {}
 try { db.exec("ALTER TABLE memory_events ADD COLUMN temporal_anchor TEXT DEFAULT ''"); } catch {}
 try { db.exec("ALTER TABLE memory_events ADD COLUMN temporal_relation TEXT NOT NULL DEFAULT 'unknown'"); } catch {}

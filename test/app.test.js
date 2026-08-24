@@ -28,7 +28,7 @@ test("健康检查和完整创作主链", async () => {
   const project=(await request(`/api/projects/${id}`)).body; assert.equal(project.episodes.length,6); assert.equal(project.current_stage,"writing");
   const episode=await request(`/api/projects/${id}/episodes/1/generate`,{method:"POST",body:"{}"}); assert.match(episode.body.script,/EP01/);assert.ok(episode.body.novel);assert.match(episode.body.episode_plan,/【逻辑推理】/);assert.match(episode.body.character_identifiers_json,/主角/);
   const quality=await request(`/api/projects/${id}/episodes/1/quality`,{method:"POST",body:"{}"}); assert.equal(quality.body.modelReview.passed,true);assert.equal(typeof quality.body.metrics.characters,"number");
-  const background=await request(`/api/projects/${id}/jobs/full-book`,{method:"POST",body:JSON.stringify({overwrite:false})});assert.equal(background.r.status,202);
+  const background=await request(`/api/projects/${id}/jobs/full-book`,{method:"POST",body:JSON.stringify({overwrite:false,auto_retry_limit:7})});assert.equal(background.r.status,202);assert.equal(background.body.auto_retry_limit,7);
   let job;for(let i=0;i<200;i++){await new Promise(r=>setTimeout(r,20));job=(await request(`/api/projects/${id}/jobs`)).body.find(x=>x.id===background.body.id);if(["completed","failed"].includes(job.status))break;}
   assert.equal(job.status,"completed",JSON.stringify({status:job.status,progress:job.progress,message:job.message,error:job.error,auto_retry_count:job.auto_retry_count,checkpoint:job.checkpoint}));assert.equal(job.progress,5);
   const completedProject=(await request(`/api/projects/${id}`)).body;assert.equal(completedProject.episodes.filter(x=>x.script).length,6);

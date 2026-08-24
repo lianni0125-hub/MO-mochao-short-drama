@@ -19,6 +19,15 @@ export const config = {
   embeddingBaseUrl: process.env.EMBEDDING_BASE_URL || "",
   embeddingModel: process.env.EMBEDDING_MODEL || "",
   embeddingApiKey: process.env.EMBEDDING_API_KEY || "",
+  embeddingGroupId: process.env.MINIMAX_EMBEDDING_GROUP_ID || "",
+  embeddingProviderKeys: {
+    openai:process.env.OPENAI_EMBEDDING_API_KEY||(process.env.EMBEDDING_PROVIDER==="openai"?process.env.EMBEDDING_API_KEY||"":""),
+    google:process.env.GOOGLE_EMBEDDING_API_KEY||((process.env.EMBEDDING_PROVIDER==="google"||(process.env.MINIMAX_EMBEDDING_API_KEY&&process.env.EMBEDDING_API_KEY&&process.env.EMBEDDING_API_KEY!==process.env.MINIMAX_EMBEDDING_API_KEY))?process.env.EMBEDDING_API_KEY||"":""),
+    minimax:process.env.MINIMAX_EMBEDDING_API_KEY||(process.env.EMBEDDING_PROVIDER==="minimax"?process.env.EMBEDDING_API_KEY||"":""),
+    zhipu:process.env.ZHIPU_EMBEDDING_API_KEY||(process.env.EMBEDDING_PROVIDER==="zhipu"?process.env.EMBEDDING_API_KEY||"":""),
+    qwen:process.env.QWEN_EMBEDDING_API_KEY||(process.env.EMBEDDING_PROVIDER==="qwen"?process.env.EMBEDDING_API_KEY||"":""),
+    custom:process.env.CUSTOM_EMBEDDING_API_KEY||(process.env.EMBEDDING_PROVIDER==="custom"?process.env.EMBEDDING_API_KEY||"":"")
+  },
   providerKeys: {
     openai: process.env.OPENAI_API_KEY || "",
     minimax: process.env.MINIMAX_API_KEY || "",
@@ -44,6 +53,7 @@ export const providerDefaults = {
 export const embeddingProviderDefaults = {
   openai: {label:"OpenAI Embedding",baseUrl:"https://api.openai.com/v1",model:"text-embedding-3-small"},
   google: {label:"Google Gemini Embedding",baseUrl:"https://generativelanguage.googleapis.com/v1beta",model:"gemini-embedding-001",protocol:"gemini"},
+  minimax: {label:"MiniMax Embedding（embo-01）",baseUrl:"https://api.minimaxi.com/v1",model:"embo-01",protocol:"minimax"},
   zhipu: {label:"智谱 Embedding",baseUrl:"https://open.bigmodel.cn/api/paas/v4",model:"embedding-3"},
   qwen: {label:"通义千问 Embedding",baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1",model:"text-embedding-v4"},
   custom: {label:"其他 OpenAI-compatible Embedding",baseUrl:"",model:""},
@@ -57,5 +67,5 @@ export function activeProvider() {
 
 export function activeEmbeddingProvider(){
   const preset=embeddingProviderDefaults[config.embeddingProvider]||embeddingProviderDefaults.custom;
-  return {...preset,id:config.embeddingProvider,baseUrl:config.embeddingBaseUrl||preset.baseUrl,model:config.embeddingModel||preset.model,apiKey:config.embeddingApiKey||""};
+  return {...preset,id:config.embeddingProvider,baseUrl:config.embeddingBaseUrl||preset.baseUrl,model:config.embeddingModel||preset.model,apiKey:config.embeddingProviderKeys?.[config.embeddingProvider]||"",groupId:config.embeddingProvider==="minimax"?config.embeddingGroupId||"":""};
 }

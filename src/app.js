@@ -44,8 +44,8 @@ app.get("/api/settings/llm", (_req, res) => res.json({
   provider: activeProvider().id, model: activeProvider().model, baseUrl:activeProvider().baseUrl,
   apiKeyConfigured: Boolean(activeProvider().apiKey), apiKeyHint: activeProvider().apiKey ? `••••••••${activeProvider().apiKey.slice(-4)}` : "",
   providers:Object.entries(providerDefaults).map(([id,p])=>({id,label:p.label,baseUrl:p.baseUrl,model:p.model})),
-  embedding:(()=>{const p=activeEmbeddingProvider();return {provider:p.id,baseUrl:p.baseUrl,model:p.model,apiKeyConfigured:Boolean(p.apiKey),apiKeyHint:p.apiKey?`••••••••${p.apiKey.slice(-4)}`:""}})(),
-  embeddingProviders:Object.entries(embeddingProviderDefaults).map(([id,p])=>({id,label:p.label,baseUrl:p.baseUrl,model:p.model}))
+  embedding:(()=>{const p=activeEmbeddingProvider();return {provider:p.id,baseUrl:p.baseUrl,model:p.model,groupId:p.groupId||"",apiKeyConfigured:Boolean(p.apiKey),apiKeyHint:p.apiKey?`••••••••${p.apiKey.slice(-4)}`:""}})(),
+  embeddingProviders:Object.entries(embeddingProviderDefaults).map(([id,p])=>{const key=config.embeddingProviderKeys?.[id]||"";return {id,label:p.label,baseUrl:p.baseUrl,model:p.model,needsGroupId:id==="minimax",groupId:id==="minimax"?config.embeddingGroupId||"":"",apiKeyConfigured:Boolean(key),apiKeyHint:key?`••••••••${key.slice(-4)}`:""};})
 }));
 app.put("/api/settings/llm", (req, res) => {
   const provider = providerDefaults[req.body.provider] ? req.body.provider : "custom";
@@ -74,15 +74,15 @@ app.post("/api/settings/llm/test", async(req,res)=>{
 });
 app.put("/api/settings/embedding",(req,res)=>{
   const provider=embeddingProviderDefaults[req.body.provider]?req.body.provider:"custom",preset=embeddingProviderDefaults[provider];
-  const model=String(req.body.model||preset.model).trim(),baseUrl=String(req.body.base_url||preset.baseUrl).trim().replace(/\/$/,""),supplied=String(req.body.api_key||"").trim(),key=supplied||config.embeddingApiKey||"";
+  const model=String(req.body.model||preset.model).trim(),baseUrl=String(req.body.base_url||preset.baseUrl).trim().replace(/\/$/,""),supplied=String(req.body.api_key||"").trim(),key=supplied||config.embeddingProviderKeys?.[provider]||"",groupId=provider==="minimax"?String(req.body.group_id||"").trim():"";
   if(provider!=="mock"&&!key)return res.status(400).json({error:"请填写 Embedding API Key"});
   if(provider==="custom"&&!baseUrl)return res.status(400).json({error:"请填写 Embedding Base URL"});
   if(!model)return res.status(400).json({error:"请填写 Embedding 模型名称"});
   const envPath=path.join(config.root,".env"),existing=fs.existsSync(envPath)?fs.readFileSync(envPath,"utf8").split(/\r?\n/):[],values=new Map(existing.filter(Boolean).map(line=>{const i=line.indexOf("=");return i>0?[line.slice(0,i),line.slice(i+1)]:[line,""];}));
-  values.set("EMBEDDING_PROVIDER",provider);values.set("EMBEDDING_BASE_URL",baseUrl);values.set("EMBEDDING_MODEL",model);if(key)values.set("EMBEDDING_API_KEY",key);
+  const embeddingKeyNames={openai:"OPENAI_EMBEDDING_API_KEY",google:"GOOGLE_EMBEDDING_API_KEY",minimax:"MINIMAX_EMBEDDING_API_KEY",zhipu:"ZHIPU_EMBEDDING_API_KEY",qwen:"QWEN_EMBEDDING_API_KEY",custom:"CUSTOM_EMBEDDING_API_KEY"},keyName=embeddingKeyNames[provider];values.set("EMBEDDING_PROVIDER",provider);values.set("EMBEDDING_BASE_URL",baseUrl);values.set("EMBEDDING_MODEL",model);if(keyName&&key)values.set(keyName,key);for(const [savedProvider,envName] of Object.entries(embeddingKeyNames)){const savedKey=savedProvider===provider?key:config.embeddingProviderKeys?.[savedProvider];if(savedKey)values.set(envName,savedKey);}if(provider==="minimax")values.set("MINIMAX_EMBEDDING_GROUP_ID",groupId);
   fs.writeFileSync(envPath,[...values].map(([k,v])=>`${k}=${v}`).join("\n")+"\n",{encoding:"utf8",mode:0o600});
-  config.embeddingProvider=provider;config.embeddingBaseUrl=baseUrl;config.embeddingModel=model;if(key)config.embeddingApiKey=key;
-  res.json({provider,providerLabel:preset.label,model,baseUrl,apiKeyConfigured:Boolean(key),apiKeyHint:key?`••••••••${key.slice(-4)}`:""});
+  config.embeddingProvider=provider;config.embeddingBaseUrl=baseUrl;config.embeddingModel=model;if(key)config.embeddingProviderKeys[provider]=key;if(provider==="minimax")config.embeddingGroupId=groupId;
+  res.json({provider,providerLabel:preset.label,model,baseUrl,groupId,apiKeyConfigured:Boolean(key),apiKeyHint:key?`••••••••${key.slice(-4)}`:""});
 });
 app.post("/api/settings/embedding/test",async(req,res)=>{try{res.json(await testEmbeddingConnection(req.body));}catch(error){res.status(400).json({ok:false,error:error.message||String(error)});}});
 app.get("/api/meta", (_req, res) => res.json({ stages: STAGES }));
@@ -171,7 +171,7 @@ app.patch("/api/projects/:id", requireProject, (req, res) => {
 app.put("/api/projects/:id/template",requireProject,(req,res)=>{const templateId=String(req.body.template_id||"default");if(templateId!=="default"&&!get("SELECT id FROM templates WHERE id=@id AND (project_id IS NULL OR project_id=@pid)",{id:Number(templateId),pid:req.project.id}))return res.status(404).json({error:"模板不存在"});run("UPDATE projects SET template_id=@template,updated_at=@time WHERE id=@id",{template:templateId,time:now(),id:req.project.id});res.json({template_id:templateId});});
 app.put("/api/projects/:id/emotion-intensity",requireProject,(req,res)=>{const value=req.body.emotion_intensity==="extreme"?"extreme":"strong";run("UPDATE projects SET emotion_intensity=@value,updated_at=@time WHERE id=@id",{value,time:now(),id:req.project.id});res.json({emotion_intensity:value});});
 app.get("/api/projects/:id/jobs", requireProject, (req,res)=>res.json(listJobs(req.project.id)));
-app.get("/api/projects/:id/jobs/history",requireProject,(req,res)=>res.json(all("SELECT id,type,target,status,progress,total,message,error,created_at,started_at,finished_at,elapsed_ms,attempt_started_at,auto_retry_count FROM jobs WHERE project_id=@id ORDER BY id DESC",{id:req.project.id})));
+app.get("/api/projects/:id/jobs/history",requireProject,(req,res)=>{const jobs=all("SELECT id,type,target,status,progress,total,message,error,created_at,started_at,finished_at,elapsed_ms,attempt_started_at,auto_retry_count,auto_retry_limit FROM jobs WHERE project_id=@id ORDER BY id DESC",{id:req.project.id}),logs=all(`SELECT l.job_id,l.episode_no,l.stage,l.round_no,l.outcome,l.error_type,l.message,l.duration_ms,l.started_at,l.finished_at FROM job_step_logs l JOIN jobs j ON j.id=l.job_id WHERE j.project_id=@id ORDER BY l.id DESC`,{id:req.project.id}),byJob=new Map();for(const log of logs){if(!byJob.has(log.job_id))byJob.set(log.job_id,[]);byJob.get(log.job_id).push(log);}res.json(jobs.map(job=>{const own=byJob.get(job.id)||[],counts=new Map();for(const item of own.filter(x=>x.outcome==="failed")){const previous=counts.get(item.error_type)||{error_type:item.error_type,count:0,duration_ms:0};previous.count++;previous.duration_ms+=Number(item.duration_ms)||0;counts.set(item.error_type,previous);}return {...job,step_log_count:own.length,error_summary:[...counts.values()].sort((a,b)=>b.count-a.count),slowest_steps:[...own].sort((a,b)=>Number(b.duration_ms)-Number(a.duration_ms)).slice(0,3),recent_step_logs:own.slice(0,12)};}));});
 app.delete("/api/projects/:id/jobs/history",requireProject,(req,res)=>{const result=run("DELETE FROM jobs WHERE project_id=@id AND status IN ('completed','failed','cancelled')",{id:req.project.id});res.json({cleared:Number(result.changes||0)});});
 app.post("/api/projects/:id/jobs/:jobId/retry",requireProject,(req,res)=>{try{
   const old=get("SELECT * FROM jobs WHERE id=@jobId AND project_id=@projectId",{jobId:Number(req.params.jobId),projectId:req.project.id});
@@ -218,9 +218,11 @@ app.post("/api/projects/:id/jobs/full-book", requireProject,requireEmbedding, (r
   if(!count)return res.status(400).json({error:"请先生成完整逐集框架"});
   const startEpisode=req.body.start_episode==null?1:Number(req.body.start_episode);
   if(!Number.isInteger(startEpisode)||startEpisode<1||!get("SELECT id FROM episodes WHERE project_id=@id AND episode_no=@episode",{id:req.project.id,episode:startEpisode}))return res.status(400).json({error:"重写起始集数无效"});
+  const autoRetryLimit=Number(req.body.auto_retry_limit??5);
+  if(!Number.isSafeInteger(autoRetryLimit)||autoRetryLimit<0)return res.status(400).json({error:"自动继续次数必须是非负整数"});
   const existing=get("SELECT id FROM jobs WHERE project_id=@id AND type='full_book' AND status IN ('queued','running')",{id:req.project.id});
   if(existing)return res.status(409).json({error:"已有全本或连锁重写任务正在进行，请等待完成或先取消"});
-  res.status(202).json(enqueueJob(req.project.id,"full_book",startEpisode===1?"all":String(startEpisode),{overwrite:Boolean(req.body.overwrite),start_episode:startEpisode}));
+  res.status(202).json(enqueueJob(req.project.id,"full_book",startEpisode===1?"all":String(startEpisode),{overwrite:Boolean(req.body.overwrite),start_episode:startEpisode,auto_retry_limit:autoRetryLimit}));
 });
 
 app.post("/api/projects/:id/constraints", requireProject, (req, res) => {

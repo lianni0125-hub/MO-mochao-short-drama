@@ -17,6 +17,12 @@ export async function embedTexts(values,{signal,providerOverride,purpose="docume
     const body=await response.json().catch(()=>({}));if(!response.ok)throw new Error(`Google Gemini Embedding 请求失败（${response.status}）：${body?.error?.message||response.statusText}`);
     const vectors=(body.embeddings||[]).map(item=>item.values);if(vectors.length!==input.length||vectors.some(item=>!Array.isArray(item)||!item.length))throw new Error("Google Gemini Embedding 返回的向量数量或格式不正确");return vectors;
   }
+  if(provider.protocol==="minimax"){
+    const base=provider.baseUrl.replace(/\/$/,""),endpoint=new URL(base.endsWith("/embeddings")?base:`${base}/embeddings`);if(provider.groupId)endpoint.searchParams.set("GroupId",provider.groupId);
+    const response=await fetch(endpoint,{method:"POST",headers:{"content-type":"application/json","authorization":`Bearer ${provider.apiKey}`},body:JSON.stringify({texts:input,model:provider.model,type:purpose==="query"?"query":"db"}),signal});
+    const body=await response.json().catch(()=>({})),status=Number(body?.base_resp?.status_code||0);if(!response.ok||status!==0)throw new Error(`MiniMax Embedding 请求失败（${response.status}）：${body?.base_resp?.status_msg||body?.error?.message||response.statusText}`);
+    const vectors=body.vectors||[];if(vectors.length!==input.length||vectors.some(item=>!Array.isArray(item)||!item.length))throw new Error("MiniMax Embedding 返回的向量数量或格式不正确");return vectors;
+  }
   const client=new OpenAI({apiKey:provider.apiKey,baseURL:provider.baseUrl,timeout:60000,maxRetries:0});
   const response=await client.embeddings.create({model:provider.model,input,encoding_format:"float"},signal?{signal}:undefined);
   const ordered=[...(response.data||[])].sort((a,b)=>a.index-b.index).map(item=>item.embedding);
@@ -28,7 +34,7 @@ export function cosineSimilarity(a,b){if(!Array.isArray(a)||!Array.isArray(b)||!
 
 export async function testEmbeddingConnection(body={}){
   const id=embeddingProviderDefaults[body.provider]?body.provider:"custom",preset=embeddingProviderDefaults[id];
-  const provider={...preset,id,baseUrl:String(body.base_url||preset.baseUrl||"").trim().replace(/\/$/,""),model:String(body.model||preset.model||"").trim(),apiKey:String(body.api_key||"").trim()||config.embeddingApiKey||""};
+  const provider={...preset,id,baseUrl:String(body.base_url||preset.baseUrl||"").trim().replace(/\/$/,""),model:String(body.model||preset.model||"").trim(),apiKey:String(body.api_key||"").trim()||config.embeddingProviderKeys?.[id]||"",groupId:String(body.group_id||"").trim()||(id==="minimax"?config.embeddingGroupId||"":"")};
   if(id!=="mock"&&!provider.apiKey)throw new Error("请填写 Embedding API Key");if(id==="custom"&&!provider.baseUrl)throw new Error("请填写 Embedding Base URL");if(!provider.model)throw new Error("请填写 Embedding 模型名称");
   const started=Date.now(),vectors=await embedTexts(["剧情记忆连接测试"],{providerOverride:provider,purpose:"query"});
   return {ok:true,providerLabel:preset.label,model:provider.model,dimensions:vectors[0]?.length||0,latencyMs:Date.now()-started};

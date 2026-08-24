@@ -69,6 +69,11 @@
 .task-history-card .task-error { color:var(--red); }
 .task-history-actions { display:flex; justify-content:flex-end; margin-top:10px; padding-top:9px; border-top:1px solid var(--line); }
 .task-history-actions button { min-width:72px; padding:7px 12px; border-radius:8px; font-size:12px; }
+.task-step-details { margin-top:9px; padding-top:8px; border-top:1px solid var(--line); }
+.task-step-details summary { cursor:pointer; color:#6f604d; font-size:11px; }
+.task-step-details p { margin:6px 0 0; font-size:11px; }
+.task-step-details > div { display:grid; gap:4px; margin-top:7px; }
+.task-step-details > div small { display:block; padding:5px 7px; border-radius:7px; background:#f5f2ed; line-height:1.45; }
 .mini-regenerate { border:0; background:transparent; color:var(--red); padding:3px 0; font-size:12px; cursor:pointer; white-space:nowrap; }
 .mini-regenerate:hover { text-decoration:underline; }
 #jobTray:not(.hidden) { position:fixed; right:24px; bottom:24px; cursor:default; }
@@ -88,9 +93,11 @@
 .character-brief-body textarea { margin-top:14px; resize:vertical; }
 .character-brief-body .hint { margin:8px 0 0; }
 .memory-status{border:1px solid var(--line);border-radius:12px;padding:14px;background:#faf8f4;margin-bottom:12px}.memory-status>div:first-child{display:flex;align-items:center;justify-content:space-between}.memory-status>small{display:block;color:var(--muted);margin-top:7px}.memory-metrics{display:grid!important;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:12px}.memory-metrics span{padding:8px 3px;border-radius:8px;background:#fff;text-align:center;font-size:9px;color:var(--muted)}.memory-metrics b{display:block;font-size:16px;color:var(--ink)}.memory-section{border-top:1px solid var(--line);padding:11px 0}.memory-section>summary{cursor:pointer;font-size:12px;font-weight:700}.memory-profile,.memory-event,.memory-chain{margin-top:8px;border-radius:9px;background:#f7f4ef;padding:10px;font-size:11px;line-height:1.55}.memory-profile summary,.memory-chain>summary{cursor:pointer;font-weight:700}.memory-chain>summary small{display:block;color:var(--muted);font-weight:400;margin-top:3px}.memory-profile small{display:block;color:var(--muted);font-weight:400;margin-top:3px}.memory-profile p,.memory-event p{margin:6px 0}.memory-event>small{color:var(--red)}.memory-event details summary{cursor:pointer;color:var(--muted)}.memory-event q{display:block;margin-top:5px;color:var(--muted)}.memory-chain-edge{display:grid;gap:4px;margin-top:8px;padding-top:8px;border-top:1px solid #e4ded4}.memory-chain-edge b{color:var(--red);font-weight:500}
+.temporal-collection{margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:9px;background:#faf8f4}.temporal-collection>.temporal-thread{margin-top:7px;border:0;border-radius:9px;padding:8px 9px;background:#fff}.temporal-thread>summary{line-height:1.35}.temporal-thread>summary small,.temporal-collection>summary small{display:block;margin-top:3px;color:var(--muted);font-size:9px;font-weight:400}.temporal-thread .memory-event{background:#f7f4ef}
 .api-settings-section{display:grid;gap:12px;padding:16px;border:1px solid var(--line);border-radius:10px;background:#faf8f4}.api-settings-section h3{font-size:17px}.embedding-settings{border-left:3px solid var(--sage)}
 .memory-rebuild-button{width:100%;margin-top:10px;padding:8px 10px;border-radius:9px;font-size:11px}
 .embedding-required-dialog{display:grid;gap:14px;padding:28px}.embedding-required-dialog>p{margin:0;line-height:1.75}
+.auto-retry-form{display:grid;gap:16px;min-width:min(460px,82vw)}.auto-retry-form>p{margin:0;line-height:1.7}.auto-retry-form input{font-size:20px;font-weight:700;text-align:center}.auto-retry-recommendation{display:grid;gap:5px;padding:12px 14px;border-left:3px solid var(--sage);border-radius:7px;background:#f2f5ef}.auto-retry-recommendation strong{color:var(--ink);font-size:13px}.auto-retry-recommendation span{color:var(--muted);font-size:12px}
 @media(max-width:900px) { .planning-grid,.control-grid,.card-point-form,.unified-constraint-form,.emotion-control { grid-template-columns:1fr; } .planning-grid label.wide { grid-column:auto; } .panel-action-stack { grid-template-columns:repeat(3,max-content); justify-content:start; } }
 
 /* Project recycle bin */
