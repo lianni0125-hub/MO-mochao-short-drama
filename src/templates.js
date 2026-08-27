@@ -34,7 +34,7 @@ export function templateWritingGuide(template){
   const novelTarget={characters:Number(novelRange.ideal||novelRange.average||1250),minCharacters:Number(novelRange.min||1000),maxCharacters:Number(novelRange.max||1500),finalRange:novelRange};
   const isDefault=String(template?.id||"default")==="default";
   const scriptAcceptance=isDefault?{min:1000,max:2000}:{min:generationTarget.minCharacters,max:generationTarget.maxCharacters};
-  const novelAcceptance=isDefault?{min:1000,max:2000}:{min:novelTarget.minCharacters,max:novelTarget.maxCharacters};
+  const novelAcceptance=isDefault?{min:2000,max:4000}:{min:novelTarget.minCharacters,max:novelTarget.maxCharacters};
   const text=String(template?.text||"");
   const scriptStart=text.search(/(?:^|\n)\s*(?:中文\s*DRAFT\s*\n)?\s*EP\s*0*1\b/i);
   let sample=raw.sampleExcerpt||"";

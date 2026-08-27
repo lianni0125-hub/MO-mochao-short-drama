@@ -10,7 +10,7 @@ import { buildCharacterImagePromptPrompt, buildStagePrompt } from "./prompts.js"
 import { generate, testConnection } from "./llm.js";
 import { analyzeDocx, exportProjectDocx } from "./documents.js";
 import { searchKnowledge, updateAllSources, updateSource } from "./knowledge.js";
-import { cancelJob, continueJob, enqueueJob, listJobs, writeEpisode } from "./jobs.js";
+import { cancelJob, configureWorkbench, continueJob, enqueueJob, getWorkbenchState, listJobs, writeEpisode } from "./jobs.js";
 import { listTemplates, templateContext, templateWritingGuide } from "./templates.js";
 import { memorySnapshot } from "./memory.js";
 import { embeddingConfigured, testEmbeddingConnection } from "./embeddings.js";
@@ -40,6 +40,8 @@ function upsertArtifact(projectId, type, content, status = "draft") {
 }
 
 app.get("/api/health", (_req, res) => { const p=activeProvider(); res.json({ ok:true,provider:p.id,providerLabel:p.label,model:p.model,apiKeyConfigured:Boolean(p.apiKey) }); });
+app.get("/api/workbench", (_req,res) => res.json(getWorkbenchState()));
+app.put("/api/workbench", (req,res) => { try { res.json(configureWorkbench(req.body||{})); } catch(error) { res.status(409).json({error:error.message}); } });
 app.get("/api/settings/llm", (_req, res) => res.json({
   provider: activeProvider().id, model: activeProvider().model, baseUrl:activeProvider().baseUrl,
   apiKeyConfigured: Boolean(activeProvider().apiKey), apiKeyHint: activeProvider().apiKey ? `••••••••${activeProvider().apiKey.slice(-4)}` : "",
@@ -161,6 +163,20 @@ app.get("/api/projects/:id", requireProject, (req, res) => res.json({
   templates:listTemplates(req.project.id),
   characterImages:all("SELECT id,character_index,character_name,source,prompt,created_at FROM character_images WHERE project_id=@id ORDER BY character_index",{id:req.project.id}).map(x=>({...x,url:`/character-images/${x.id}`}))
 }));
+app.delete("/api/projects/:id/story-memory", requireProject, (req, res) => {
+  if(req.body?.confirm!==true)return res.status(400).json({error:"请在确认弹窗中明确确认清空故事状态"});
+  const active=get("SELECT id FROM jobs WHERE project_id=@id AND status IN ('queued','running') LIMIT 1",{id:req.project.id});
+  if(active)return res.status(409).json({error:"当前项目仍有进行中的任务，请先等待完成或取消任务，再清空故事状态"});
+  const tables=["memory_entities","memory_events","memory_links","memory_chains","memory_relationship_changes","memory_relationships","memory_secondary_characters","memory_golden_fingers","memory_golden_changes","memory_golden_abilities","memory_golden_ability_changes","memory_important_props","memory_prop_changes","memory_resources","memory_resource_changes","memory_vectors","memory_extractions","memory_temporal_relations","story_state"];
+  const counts=Object.fromEntries(tables.map(table=>[table,Number(get(`SELECT COUNT(*) count FROM ${table} WHERE project_id=@id`,{id:req.project.id})?.count||0)]));
+  transaction(()=>{
+    run("DELETE FROM memory_chain_events WHERE chain_id IN (SELECT id FROM memory_chains WHERE project_id=@id)",{id:req.project.id});
+    for(const table of ["memory_vectors","memory_temporal_relations","memory_links","memory_relationship_changes","memory_relationships","memory_secondary_characters","memory_golden_ability_changes","memory_golden_abilities","memory_golden_changes","memory_golden_fingers","memory_prop_changes","memory_important_props","memory_resource_changes","memory_resources","memory_chains","memory_events","memory_extractions","memory_entities","story_state"]){
+      run(`DELETE FROM ${table} WHERE project_id=@id`,{id:req.project.id});
+    }
+  });
+  res.json({cleared:true,records:Object.values(counts).reduce((sum,value)=>sum+value,0),storyMemory:memorySnapshot(req.project.id)});
+});
 app.patch("/api/projects/:id", requireProject, (req, res) => {
   const p = { ...req.project, ...req.body };
   run(`UPDATE projects SET title=@title,logline=@logline,tags_json=@tags,total_episodes=@episodes,audience=@audience,platform=@platform,restrictions=@restrictions,seed=@seed,updated_at=@time WHERE id=@id`, {
@@ -170,6 +186,7 @@ app.patch("/api/projects/:id", requireProject, (req, res) => {
 });
 app.put("/api/projects/:id/template",requireProject,(req,res)=>{const templateId=String(req.body.template_id||"default");if(templateId!=="default"&&!get("SELECT id FROM templates WHERE id=@id AND (project_id IS NULL OR project_id=@pid)",{id:Number(templateId),pid:req.project.id}))return res.status(404).json({error:"模板不存在"});run("UPDATE projects SET template_id=@template,updated_at=@time WHERE id=@id",{template:templateId,time:now(),id:req.project.id});res.json({template_id:templateId});});
 app.put("/api/projects/:id/emotion-intensity",requireProject,(req,res)=>{const value=req.body.emotion_intensity==="extreme"?"extreme":"strong";run("UPDATE projects SET emotion_intensity=@value,updated_at=@time WHERE id=@id",{value,time:now(),id:req.project.id});res.json({emotion_intensity:value});});
+app.put("/api/projects/:id/narrative-person",requireProject,(req,res)=>{const value=req.body.narrative_person==="third"?"third":"first";run("UPDATE projects SET narrative_person=@value,updated_at=@time WHERE id=@id",{value,time:now(),id:req.project.id});res.json({narrative_person:value});});
 app.get("/api/projects/:id/jobs", requireProject, (req,res)=>res.json(listJobs(req.project.id)));
 app.get("/api/projects/:id/jobs/history",requireProject,(req,res)=>{const jobs=all("SELECT id,type,target,status,progress,total,message,error,created_at,started_at,finished_at,elapsed_ms,attempt_started_at,auto_retry_count,auto_retry_limit FROM jobs WHERE project_id=@id ORDER BY id DESC",{id:req.project.id}),logs=all(`SELECT l.job_id,l.episode_no,l.stage,l.round_no,l.outcome,l.error_type,l.message,l.duration_ms,l.started_at,l.finished_at FROM job_step_logs l JOIN jobs j ON j.id=l.job_id WHERE j.project_id=@id ORDER BY l.id DESC`,{id:req.project.id}),byJob=new Map();for(const log of logs){if(!byJob.has(log.job_id))byJob.set(log.job_id,[]);byJob.get(log.job_id).push(log);}res.json(jobs.map(job=>{const own=byJob.get(job.id)||[],counts=new Map();for(const item of own.filter(x=>x.outcome==="failed")){const previous=counts.get(item.error_type)||{error_type:item.error_type,count:0,duration_ms:0};previous.count++;previous.duration_ms+=Number(item.duration_ms)||0;counts.set(item.error_type,previous);}return {...job,step_log_count:own.length,error_summary:[...counts.values()].sort((a,b)=>b.count-a.count),slowest_steps:[...own].sort((a,b)=>Number(b.duration_ms)-Number(a.duration_ms)).slice(0,3),recent_step_logs:own.slice(0,12)};}));});
 app.delete("/api/projects/:id/jobs/history",requireProject,(req,res)=>{const result=run("DELETE FROM jobs WHERE project_id=@id AND status IN ('completed','failed','cancelled')",{id:req.project.id});res.json({cleared:Number(result.changes||0)});});
@@ -177,7 +194,7 @@ app.post("/api/projects/:id/jobs/:jobId/retry",requireProject,(req,res)=>{try{
   const old=get("SELECT * FROM jobs WHERE id=@jobId AND project_id=@projectId",{jobId:Number(req.params.jobId),projectId:req.project.id});
   if(!old)return res.status(404).json({error:"原任务不存在或已被清空"});
   if(!["failed","cancelled"].includes(old.status))return res.status(400).json({error:"只有失败或已取消的任务可以继续/重试"});
-  if(old.type==="full_book")return res.status(202).json({mode:"继续",job:continueJob(req.project.id,old.id),from_job_id:old.id,same_job:true});
+  if(["full_book","episode","episode_script"].includes(old.type)||(old.type==="stage"&&old.target==="outline"))return res.status(202).json({mode:"继续",job:continueJob(req.project.id,old.id),from_job_id:old.id,same_job:true});
   let type=old.type,target=old.target,mode="重试";
   if(type==="连锁重生成必须发生"){
     const next=Number(old.target)+Number(old.progress||0),last=get("SELECT MAX(episode_no) last FROM episodes WHERE project_id=@id",{id:req.project.id})?.last||0;
@@ -187,7 +204,7 @@ app.post("/api/projects/:id/jobs/:jobId/retry",requireProject,(req,res)=>{try{
     const originalStart=old.target==="all"?1:Number(old.target),next=originalStart+Number(old.progress||0),last=get("SELECT MAX(episode_no) last FROM episodes WHERE project_id=@id",{id:req.project.id})?.last||0;
     if(next>last)return res.status(400).json({error:"该任务已没有未完成的分集"});
     target=String(next);mode="继续";
-  }else if(!["episode_boundary","episode","episode_novel","episode_arrangement","episode_script","episode_state_extract","memory_rebuild"].includes(type))return res.status(400).json({error:"该任务类型暂不支持继续或重试"});
+  }else if(!["stage","planning_section","episode_boundaries","episode_boundary","episode","episode_novel","episode_arrangement","episode_script","episode_state_extract","memory_rebuild"].includes(type))return res.status(400).json({error:"该任务类型暂不支持继续或重试"});
   const job=enqueueJob(req.project.id,type,target,JSON.parse(old.payload_json||"{}"));
   res.status(202).json({mode,job,from_job_id:old.id});
 }catch(error){res.status(400).json({error:error.message||String(error)});}});
@@ -196,6 +213,7 @@ app.post("/api/projects/:id/jobs/stage/:stage", requireProject, (req,res)=>{
   if(!["idea","planning","cards","characters","outline"].includes(req.params.stage))return res.status(400).json({error:"未知生成阶段"});
   res.status(202).json(enqueueJob(req.project.id,"stage",req.params.stage));
 });
+app.post("/api/projects/:id/jobs/outline-continue",requireProject,(req,res)=>{const startEpisode=Number(req.body?.start_episode);if(!Number.isInteger(startEpisode)||startEpisode<2||startEpisode>Number(req.project.total_episodes)||(startEpisode-1)%5!==0)return res.status(400).json({error:"续写起点必须是5集窗口后的下一集，例如 EP06、EP11、EP16"});const previous=all("SELECT episode_no,summary,hook FROM episodes WHERE project_id=@pid AND episode_no<@start ORDER BY episode_no",{pid:req.project.id,start:startEpisode});if(previous.length!==startEpisode-1||previous.some((ep,index)=>Number(ep.episode_no)!==index+1||!String(ep.summary||"").trim()||!String(ep.hook||"").trim()))return res.status(400).json({error:"续写起点之前存在缺失分集，或本集大概内容、钩子为空"});res.status(202).json(enqueueJob(req.project.id,"stage","outline",{preserve_existing:true,start_episode:startEpisode}));});
 app.post("/api/projects/:id/jobs/planning/:section",requireProject,(req,res)=>{
   if(!["title","framework","worldbuilding","synopsis","core_expectations"].includes(req.params.section))return res.status(400).json({error:"未知的策划字段"});
   res.status(202).json(enqueueJob(req.project.id,"planning_section",req.params.section));
@@ -455,9 +473,9 @@ app.post("/api/sources/update", async (_req, res) => res.json(await updateAllSou
 app.post("/api/sources/:sourceId/update", async (req, res) => { const source=get("SELECT * FROM sources WHERE id=@id", {id:Number(req.params.sourceId)}); if(!source) return res.status(404).json({error:"来源不存在"}); res.json(await updateSource(source)); });
 
 app.post("/api/projects/:id/export", requireProject, async (req, res, next) => { try {
-  const type=req.body?.type==="novel"?"novel":"script",requested=Array.isArray(req.body?.episode_numbers)?[...new Set(req.body.episode_numbers.map(Number).filter(Number.isInteger))]:null;
+  const type=["outline","novel","script"].includes(req.body?.type)?req.body.type:"script",requested=Array.isArray(req.body?.episode_numbers)?[...new Set(req.body.episode_numbers.map(Number).filter(Number.isInteger))]:null;
   let episodes=all("SELECT * FROM episodes WHERE project_id=@id ORDER BY episode_no",{id:req.project.id});if(requested)episodes=episodes.filter(ep=>requested.includes(ep.episode_no));
-  episodes=episodes.filter(ep=>String(type==="novel"?ep.novel:ep.script).trim());if(!episodes.length)return res.status(400).json({error:`所选集数中没有可导出的${type==="novel"?"小说":"剧本"}内容`});
+  const label=type==="outline"?"梗概":type==="novel"?"小说":"剧本";episodes=episodes.filter(ep=>String(type==="outline"?[ep.title,ep.summary,ep.hook,ep.required_plot].join(""):type==="novel"?ep.novel:ep.script).trim());if(!episodes.length)return res.status(400).json({error:`所选集数中没有可导出的${label}内容`});
   const output=await exportProjectDocx(req.project,artifactsFor(req.project.id),episodes,all("SELECT * FROM character_images WHERE project_id=@id",{id:req.project.id}),{type});res.json({filename:output.filename,url:`/exports/${encodeURIComponent(output.filename)}`,episodes:episodes.map(x=>x.episode_no),type});
 } catch(error){next(error);} });
 app.use("/exports", express.static(config.exportsDir));

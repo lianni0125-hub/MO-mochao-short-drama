@@ -291,6 +291,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_project_created ON jobs(project_id, id DESC);
+CREATE TABLE IF NOT EXISTS workbench_settings (
+  id INTEGER PRIMARY KEY CHECK(id=1), parallel_enabled INTEGER NOT NULL DEFAULT 0,
+  session_id TEXT NOT NULL DEFAULT '', concurrency_mode TEXT NOT NULL DEFAULT 'auto',
+  concurrency_limit INTEGER NOT NULL DEFAULT 3, adaptive_limit INTEGER NOT NULL DEFAULT 3,
+  recover_at TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO workbench_settings(id) VALUES(1);
 CREATE TABLE IF NOT EXISTS job_step_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, project_id INTEGER NOT NULL,
   episode_no INTEGER, stage TEXT NOT NULL DEFAULT '', round_no INTEGER,
@@ -306,6 +313,7 @@ try { db.exec("ALTER TABLE sources ADD COLUMN library TEXT NOT NULL DEFAULT 'rea
 try { db.exec("ALTER TABLE projects ADD COLUMN template_id TEXT NOT NULL DEFAULT 'default'"); } catch {}
 try { db.exec("ALTER TABLE episodes ADD COLUMN hook TEXT DEFAULT ''"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN emotion_intensity TEXT NOT NULL DEFAULT 'strong'"); } catch {}
+try { db.exec("ALTER TABLE projects ADD COLUMN narrative_person TEXT NOT NULL DEFAULT 'first'"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN sort_order INTEGER"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN deleted_at TEXT"); } catch {}
 db.exec("UPDATE projects SET sort_order=id WHERE sort_order IS NULL");
@@ -321,6 +329,9 @@ try { db.exec("ALTER TABLE jobs ADD COLUMN auto_retry_count INTEGER NOT NULL DEF
 try { db.exec("ALTER TABLE jobs ADD COLUMN auto_retry_limit INTEGER NOT NULL DEFAULT 5"); } catch {}
 try { db.exec("ALTER TABLE jobs ADD COLUMN checkpoint_json TEXT NOT NULL DEFAULT '{}'"); } catch {}
 try { db.exec("ALTER TABLE jobs ADD COLUMN step_started_at TEXT"); } catch {}
+try { db.exec("ALTER TABLE jobs ADD COLUMN workbench_session_id TEXT NOT NULL DEFAULT ''"); } catch {}
+try { db.exec("ALTER TABLE jobs ADD COLUMN interruption_reason TEXT NOT NULL DEFAULT ''"); } catch {}
+db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_workbench_session ON jobs(workbench_session_id,status,id)");
 try { db.exec("ALTER TABLE memory_events ADD COLUMN scene_no INTEGER NOT NULL DEFAULT 1"); } catch {}
 try { db.exec("ALTER TABLE memory_events ADD COLUMN source_line_start INTEGER"); } catch {}
 try { db.exec("ALTER TABLE memory_events ADD COLUMN source_line_end INTEGER"); } catch {}

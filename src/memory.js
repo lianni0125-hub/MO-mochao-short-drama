@@ -374,6 +374,7 @@ ${unit.text}`;
 - 只收录真正参与剧情的具体物件：承载关键证据、秘密、威胁、交易、身份凭证、承诺，能触发或改变人物行动，或已明确会被再次使用。记录名称必须带足区分对象的限定词，如“母亲病床威胁照片”，不能只写“照片”。
 - 普通陈设、服装、随手工具、仅体现职业或氛围的物件不收录；铜钱、罗盘、手机、名片等即使被拿起也不自动算重要，除非其具体内容或归属确实推动剧情。金手指及其专属神器归入金手指，不在这里重复。
 - significance只写该物在已发生剧情中的明确作用。origin_text记录剧本明确交代的来源、购买或取得经过；current_holder记录本集结束时持有人；current_location只记录本集结束时实际所在位置，不能把购买地点或来源误写成当前位置；current_state记录内容、完整性和可用性。不知道就留空，禁止猜测。
+- “手下、保镖、司机、黑衣人”等泛称人物的归属，只能依据该道具证据所在场次判断。不得用其他场次后来出现的雇主或带队者解释本场泛称；本场无法确认归属时写“未具名手下/未具名保镖/未具名司机”，不得猜测。
 - 道具可以在剧情中转交、交易、抢夺、遗失、损坏或销毁，但必须有本集可见事件作为原因，并在change_summary写清“旧状态→发生事件→新状态”；不能无过程跳变。
 - 首次达到重要标准，或持有人、位置、内容、完整性、可用性发生变化时输出；无变化但仍被提及时可用于补全快照，此时change_type=无状态变化、change_summary留空。
 
@@ -416,6 +417,16 @@ ${episode.script}`;
   const dimensionResult=await generate({stage:"memory_dimensions",project,prompt:dimensionPrompt,schema:dimensionSchema,extra:{episode},signal});
   const genericName=genericCharacterIdentifier;
   const dimension={relationships:(dimensionResult.output?.relationships||[]).filter(item=>text(item.person_a)&&text(item.person_b)&&text(item.summary)&&text(item.person_a)!==text(item.person_b)&&text(episode.script).includes(text(item.source_quote))),secondaryCharacters:(dimensionResult.output?.secondary_characters||[]).filter(item=>text(item.name)&&!genericName.test(text(item.name))&&!initialNames.has(text(item.name))&&text(episode.script).includes(text(item.source_quote))),goldenFingers:(dimensionResult.output?.golden_fingers||[]).filter(item=>text(item.name)&&text(item.owner)&&text(episode.script).includes(text(item.source_quote))),goldenAbilities:(dimensionResult.output?.golden_abilities||[]).filter(item=>text(item.golden_name)&&text(item.ability_name)&&text(item.owner)&&text(item.description)&&text(episode.script).includes(text(item.source_quote))),importantProps:(dimensionResult.output?.important_props||[]).filter(item=>text(item.name)&&text(item.significance)&&text(episode.script).includes(text(item.source_quote))),resources:(dimensionResult.output?.resources||[]).filter(item=>text(item.owner)&&text(item.name)&&text(episode.script).includes(text(item.source_quote)))};
+  const knownSceneNames=[...new Set([...initialNames,...stableCharacterIdentifiers])].filter(Boolean);
+  const sceneForQuote=quote=>{const position=sourcePosition(episode.script,quote);return scenes.find(scene=>position.start>=scene.startLine&&position.start<=scene.endLine)||null;};
+  const normalizeGenericPropHolder=item=>{
+    const holder=text(item.current_holder),matched=holder.match(/^(.+?)(?:的)?(手下|保镖|司机|黑衣人)$/);if(!matched)return item;
+    const claimed=text(matched[1]),kind=matched[2],scene=sceneForQuote(item.source_quote);if(!scene)return {...item,current_holder:`未具名${kind}`};
+    if(claimed&&scene.text.includes(claimed))return item;
+    const controllers=knownSceneNames.filter(name=>scene.text.includes(name)&&new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}.{0,18}(?:示意|命令|吩咐|挥手|带着|带来|率领|身后跟着).{0,18}(?:手下|保镖|司机|黑衣人)|${name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}的?(?:手下|保镖|司机|黑衣人)`).test(scene.text));
+    return {...item,current_holder:controllers.length===1?`${controllers[0]}的未具名${kind}`:`未具名${kind}`};
+  };
+  dimension.importantProps=dimension.importantProps.map(normalizeGenericPropHolder);
   for(const name of stableCharacterIdentifiers){if(dimension.secondaryCharacters.some(item=>text(item.name)===name))continue;const sourceQuote=episode.script.split(/\r?\n/).map(line=>line.trim()).find(line=>line.startsWith(`${name}：`)||line.startsWith(`${name}:`));if(sourceQuote)dimension.secondaryCharacters.push({order:dimension.secondaryCharacters.length+1,name,identity:"",traits:"",source_quote:sourceQuote});}
   const eventTemporalScope=event=>event?.timeline_type==="flashback"?"historical_only":event?.timeline_type==="flashforward"?"future_only":["main","parallel"].includes(event?.timeline_type)?"advance_current":"no_change";
   const temporalScope=item=>{const position=sourcePosition(episode.script,item.source_quote),matched=raw.find(event=>position.index>=event._sourceIndex&&position.index<=event._sourceIndex+text(event.source_quote).length)||raw.find(event=>event._sourceIndex>=position.index&&event._sourceIndex<=position.index+text(item.source_quote).length);if(matched)return eventTemporalScope(matched);const sceneNo=scenes.find(scene=>position.start>=scene.startLine&&position.start<=scene.endLine)?.sceneNo,sceneScopes=[...new Set(raw.filter(event=>event.scene_no===sceneNo).map(eventTemporalScope))];if(sceneScopes.length===1)return sceneScopes[0];const allScopes=[...new Set(raw.map(eventTemporalScope))];return allScopes.length===1?allScopes[0]:"no_change";};

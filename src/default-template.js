@@ -1,5 +1,5 @@
 export const DEFAULT_TEMPLATE = {
-  id:"default", name:"默认专业短剧模板（小说转剧本）", kind:"builtin", version:4,
+  id:"default", name:"默认专业短剧模板（小说转剧本）", kind:"builtin", version:5,
   planningSections:[
     {id:"planning",order:1,title:"故事策划",required:true,fields:["title","framework","worldbuilding","synopsis","core_expectations"]},
     {id:"characters",order:2,title:"人物人设",required:true,fields:["role","name","age","personality","biography","image_prompt","reference_image_optional"]},
@@ -12,7 +12,7 @@ export const DEFAULT_TEMPLATE = {
     voiceOver:"角色名 V.O.：画外音；角色名 OS：内心独白，均不使用括号",
     action:"环境、动作、表情及可见结果使用独立短段落，只写镜头能够拍到的内容",
     notes:"仅在确有制作必要时使用【蒙太奇】等方括号提示",
-    novelCharacters:{min:1000,ideal:1250,max:1500},
+    novelCharacters:{min:2000,ideal:2500,max:3000},
     targetCharacters:{min:1500,ideal:1750,max:2000},
     targetScenes:{min:1,ideal:2,max:3},
     rules:[
@@ -28,7 +28,7 @@ export const DEFAULT_TEMPLATE = {
       "禁止使用瞳孔骤缩、眼睛一亮、眼中闪过、眼神一沉、嘴角上扬、眉头一皱、倒吸凉气等套路化微反应；握紧拳头属于可拍动作，可在确有剧情作用时使用",
       "正文不使用任何圆括号或小括号；V.O./OS 直接写在角色名后；方括号只保留极少量必要蒙太奇提示",
       "开头立即承接上集悬念或进入当前危机，不回顾前情；结尾在危险、发现或强反应出现后立即停止，不做总结",
-      "先生成1000–1500字第一人称小说中间稿，再转换为1500–2000字剧本；严格1–3场"
+      "先生成2000–3000字、采用05所选叙事人称的小说中间稿，再转换为1500–2000字剧本；严格1–3场"
     ],
     sampleExcerpt:`EP02
 
