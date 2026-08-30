@@ -68,6 +68,16 @@ npm run start:autodl
 
 `npm start` 与 `npm run start:autodl` 均默认监听 `0.0.0.0:6008`。AutoDL 会为实例的 6008 端口提供公网映射，可从“自定义服务”入口获取访问地址。
 
+### 开机自动启动
+
+发布应用或创建部署时，请在 AutoDL 的“启动命令”中填写：
+
+```bash
+bash /root/autodl-tmp/MO-mochao-short-drama/scripts/autodl-start.sh
+```
+
+如果项目安装在其他目录，请替换为实际路径。启动脚本会自动定位项目根目录、加载 NVM 中的 Node.js，并以前台进程监听 `0.0.0.0:6008`；实例关闭时进程结束，下次开机由 AutoDL 再次执行启动命令。
+
 ## 🔑 配置模型
 
 启动后可在“模型设置”中分别配置正文生成 API 与 Embedding API。两套配置互相独立：
