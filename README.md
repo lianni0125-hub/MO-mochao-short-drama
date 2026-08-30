@@ -37,11 +37,18 @@ Copy-Item .env.example .env
 npm start
 ```
 
-打开 <http://127.0.0.1:3210>。也可直接在页面“模型设置”中填写 API。
+GitHub 发布版默认监听 `0.0.0.0:6008`，便于直接制作 AutoDL 镜像。本地使用如果希望保持原来的 3210 端口，只需在不会提交到 Git 的 `.env` 中设置：
+
+```dotenv
+PORT=3210
+HOST=127.0.0.1
+```
+
+随后打开 <http://127.0.0.1:3210>。你电脑上已经存在的 `.env` 不会被本次更新覆盖。
 
 ## ☁️ AutoDL 部署
 
-AutoDL 使用 6008 作为 WebUI 端口，本地启动仍保持 3210：
+仓库默认已经适配 AutoDL 的 6008 WebUI 端口：
 
 ```bash
 git clone https://github.com/lianni0125-hub/MO-mochao-short-drama.git
@@ -51,7 +58,9 @@ cp .env.example .env
 npm run start:autodl
 ```
 
-`start:autodl` 监听 `0.0.0.0:6008`。请在 AutoDL 控制台把自定义服务/WebUI 端口设为 **6008**。长期运行建议使用平台守护或 PM2/systemd，避免终端会话结束带走 Node 进程。
+普通的 `npm start` 与 `npm run start:autodl` 均可在 AutoDL 使用，默认监听 `0.0.0.0:6008`。AutoDL 会为实例的 6008 端口提供公网映射，可从“自定义服务”入口访问。
+
+正式镜像发布后，用户也可以进入 AutoDL 的 **AI应用 → 应用广场**，搜索并拉取“墨潮 · AI 短剧自动编剧系统”镜像，按应用页面说明启动，无需自行克隆和安装依赖。
 
 ## 🔑 模型、Embedding 与本地数据
 
