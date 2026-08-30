@@ -165,7 +165,9 @@ const renderVersionDialog=()=>{
   const notes=(shown?.notes||[]).map(note=>`<li>${esc(note)}</li>`).join("");
   content.innerHTML=`<div class="version-badges"><span>当前 v${esc(current.version)}</span>${updateAvailable?`<strong>最新 v${esc(latest.version)}</strong>`:""}</div><h3>${esc(shown?.title||"版本说明")}</h3><ul>${notes||"<li>暂无更新说明</li>"}</ul>${updateAvailable?'<p class="version-safety-note">一键更新只更新程序源码和依赖，不会覆盖 <code>data/</code> 或 <code>.env</code>。更新时不能有正在运行的生成任务或未提交的源码修改。</p>':""}`;
 };
-const checkVersion=async()=>{try{versionState=await api("/api/version");}catch(error){versionState={current:{version:"未知"},checkError:error.message};}const button=$("#versionUpdateButton"),ignored=Boolean(versionState.updateAvailable&&versionState.latest?.version===ignoredVersion());button.classList.toggle("update-available",Boolean(versionState.updateAvailable&&!ignored));button.textContent=versionState.updateAvailable&&!ignored?"版本更新！":"版本更新";renderVersionDialog();};
+let versionCheckTimer=null,versionCheckInFlight=null;
+const scheduleVersionCheck=delay=>{clearTimeout(versionCheckTimer);versionCheckTimer=setTimeout(()=>checkVersion(),delay);};
+const checkVersion=async()=>{if(versionCheckInFlight)return versionCheckInFlight;versionCheckInFlight=(async()=>{try{versionState=await api("/api/version");}catch(error){versionState={current:{version:"未知"},checkError:error.message};}const button=$("#versionUpdateButton"),ignored=Boolean(versionState.updateAvailable&&versionState.latest?.version===ignoredVersion());button.classList.toggle("update-available",Boolean(versionState.updateAvailable&&!ignored));button.textContent=versionState.updateAvailable&&!ignored?"版本更新！":"版本更新";renderVersionDialog();scheduleVersionCheck(versionState.checkError?30*1000:30*60*1000);})();try{return await versionCheckInFlight;}finally{versionCheckInFlight=null;}};
 let systemUpdatePoll=null;
 const renderSystemUpdate=update=>{const box=$("#systemUpdateProgress"),error=$("#systemUpdateError"),install=$("#versionInstallButton");if(!update||update.status==="idle"){box.classList.add("hidden");return;}box.classList.remove("hidden");$("#systemUpdateMessage").textContent=update.message||"正在更新";$("#systemUpdatePercent").textContent=`${Number(update.progress||0)}%`;$("#systemUpdateBar").value=Number(update.progress||0);error.classList.toggle("hidden",!update.error);error.textContent=update.error||"";install.disabled=update.status==="running";install.classList.toggle("hidden",update.status==="running"||update.status==="completed");if(update.status==="completed"){$("#versionDialogTitle").textContent="更新完成 · 请重启应用";clearInterval(systemUpdatePoll);systemUpdatePoll=null;}if(update.status==="failed"){clearInterval(systemUpdatePoll);systemUpdatePoll=null;}};
 const pollSystemUpdate=async()=>{try{renderSystemUpdate(await api("/api/system-update"));}catch(error){renderSystemUpdate({status:"failed",progress:0,message:"无法读取更新进度",error:error.message});}};
@@ -173,6 +175,8 @@ const startSystemUpdatePolling=()=>{clearInterval(systemUpdatePoll);pollSystemUp
 $("#versionInstallButton").onclick=async()=>{if(!confirm("确定立即更新到 GitHub 最新版本吗？\n\n更新不会覆盖项目数据和 API 配置；更新完成后需要重启应用。"))return;try{await api("/api/system-update",{method:"POST",body:JSON.stringify({confirm:true})});startSystemUpdatePolling();}catch(error){renderSystemUpdate({status:"failed",progress:0,message:"无法开始更新",error:error.message});}};
 $("#versionIgnoreButton").onclick=()=>{const version=versionState?.latest?.version;if(!version)return;localStorage.setItem(ignoredVersionKey,version);checkVersion();toast(`已忽略 v${version} 的更新提醒`);};
 $("#versionUpdateButton").onclick=()=>{$("#versionUpdateDialog").showModal();checkVersion();pollSystemUpdate();};
+window.addEventListener("online",()=>checkVersion());
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)checkVersion();});
 let providerPresets=[],embeddingProviderPresets=[],settingsInitialEmbeddingProvider="";
 const offlineGenerationOption=document.querySelector('#settingsForm select[name="provider"] option[value="mock"]');if(offlineGenerationOption)offlineGenerationOption.textContent="离线界面演示";
 const embeddingReady=()=>Boolean(state.project?.storyMemory?.stats?.embeddingConfigured);
@@ -327,7 +331,6 @@ const sourceListObserver=new MutationObserver(pruneRetiredKnowledgeSources);
 sourceListObserver.observe($("#sourceList"),{childList:true,subtree:true});
 init().then(()=>pollJobs()).catch(e=>toast(e.message));
 checkVersion();
-setInterval(checkVersion,30*60*1000);
 setInterval(pollJobs,2000);
 setInterval(refreshIncrementalJobProgress,1000);
 setInterval(()=>{if(state.workbenchMode)renderWorkbench()},2000);

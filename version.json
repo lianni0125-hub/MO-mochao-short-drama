@@ -1,11 +1,11 @@
 {
-  "version": "1.2.4",
-  "title": "AutoDL 开机启动适配",
+  "version": "1.2.5",
+  "title": "更新提醒自动恢复",
   "publishedAt": "2026-08-30",
   "notes": [
-    "新增 AutoDL 专用前台启动脚本",
-    "非交互启动时自动加载 NVM 与 Node.js 环境",
-    "README 补充应用发布启动命令和开机自动运行说明"
+    "版本检查失败后每30秒自动重试",
+    "网络恢复或页面重新回到前台时立即重新检查",
+    "成功后恢复30分钟检查周期，并防止重复请求叠加"
   ],
   "url": "https://github.com/lianni0125-hub/MO-mochao-short-drama"
 }
