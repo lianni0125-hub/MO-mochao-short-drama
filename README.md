@@ -51,33 +51,34 @@ HOST=127.0.0.1
 
 ## ☁️ AutoDL 部署
 
-项目已适配 AutoDL 的 6008 WebUI 端口。可选择以下任一方式部署。
+项目已适配 AutoDL 的 6008 WebUI 端口，无需 GPU，使用 CPU 无卡实例即可运行。
 
 ### 从应用广场使用
 
-进入 AutoDL **AI应用 → 应用广场**，搜索“墨潮 · AI 短剧自动编剧系统”，拉取镜像并按应用页面说明启动。镜像已经包含运行环境和项目依赖。
+镜像通过 AutoDL 应用广场审核后，可进入 **AI应用 → 应用广场**，搜索“墨潮 · AI 短剧自动编剧系统”并创建实例。镜像已经包含 Node.js 运行环境、项目源码和依赖。
 
 ### 从源码部署
 
 ```bash
+cd /root
 git clone https://github.com/lianni0125-hub/MO-mochao-short-drama.git
-cd MO-mochao-short-drama
+cd /root/MO-mochao-short-drama
 npm install
 cp .env.example .env
 npm run start:autodl
 ```
 
-`npm start` 与 `npm run start:autodl` 均默认监听 `0.0.0.0:6008`。AutoDL 会为实例的 6008 端口提供公网映射，可从“自定义服务”入口获取访问地址。
+服务默认监听 `0.0.0.0:6008`。在 AutoDL 实例页面打开对应的“自定义服务”地址即可访问。
 
 ### 开机自动启动
 
 发布应用或创建部署时，请在 AutoDL 的“启动命令”中填写：
 
 ```bash
-bash /root/autodl-tmp/MO-mochao-short-drama/scripts/autodl-start.sh
+bash /root/MO-mochao-short-drama/scripts/autodl-start.sh
 ```
 
-如果项目安装在其他目录，请替换为实际路径。启动脚本会自动定位项目根目录、加载 NVM 中的 Node.js，并以前台进程监听 `0.0.0.0:6008`；实例关闭时进程结束，下次开机由 AutoDL 再次执行启动命令。
+如果项目安装在其他目录，请将路径替换为实际仓库路径。启动脚本会自动定位项目根目录、加载 NVM 中的 Node.js，并以前台进程监听 `0.0.0.0:6008`。实例关机后任务停止；再次开机时，AutoDL 会重新执行启动命令。
 
 ## 🔑 配置模型
 
