@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import express from "express";
 import multer from "multer";
 import { activeEmbeddingProvider, activeProvider, config, embeddingProviderDefaults, providerDefaults } from "./config.js";
@@ -22,10 +23,40 @@ app.use(express.json({ limit: "5mb" }));
 const localVersionPath=path.join(config.root,"version.json");
 const remoteVersionUrl="https://raw.githubusercontent.com/lianni0125-hub/MO-mochao-short-drama/main/version.json";
 const readLocalVersion=()=>JSON.parse(fs.readFileSync(localVersionPath,"utf8"));
+const readRemoteVersion=async()=>{const response=await fetch(`${remoteVersionUrl}?t=${Date.now()}`,{headers:{"User-Agent":"MO-mochao-short-drama-version-check"},signal:AbortSignal.timeout(8000)});if(!response.ok)throw new Error(`GitHub ${response.status}`);return response.json();};
 const compareVersions=(left,right)=>{
   const a=String(left||"0").split(".").map(part=>Number(part)||0),b=String(right||"0").split(".").map(part=>Number(part)||0);
   for(let index=0;index<Math.max(a.length,b.length);index++){if((a[index]||0)!==(b[index]||0))return (a[index]||0)-(b[index]||0);}
   return 0;
+};
+let systemUpdateState={status:"idle",progress:0,message:"尚未开始更新",startedAt:null,finishedAt:null,restartRequired:false,error:null};
+const runProcess=(command,args,timeoutMs)=>new Promise((resolve,reject)=>{
+  const child=spawn(command,args,{cwd:config.root,windowsHide:true,stdio:["ignore","pipe","pipe"]});
+  let stderr="";
+  child.stderr.on("data",chunk=>{stderr=(stderr+chunk.toString()).slice(-2000);});
+  const timer=setTimeout(()=>{child.kill();reject(new Error(`${command} 执行超时`));},timeoutMs);
+  child.on("error",error=>{clearTimeout(timer);reject(error);});
+  child.on("close",code=>{clearTimeout(timer);code===0?resolve():reject(new Error(`${command} 执行失败${stderr?`：${stderr.slice(-300)}`:""}`));});
+});
+const setUpdateProgress=(progress,message)=>{systemUpdateState={...systemUpdateState,status:"running",progress,message};};
+const performSystemUpdate=async()=>{
+  try{
+    setUpdateProgress(8,"正在检查源码状态");
+    await runProcess("git",["diff","--quiet","HEAD","--"],30000);
+    setUpdateProgress(18,"正在连接官方 GitHub 仓库");
+    const remote=await new Promise((resolve,reject)=>{
+      const child=spawn("git",["remote","get-url","origin"],{cwd:config.root,windowsHide:true,stdio:["ignore","pipe","pipe"]});let output="";child.stdout.on("data",chunk=>output+=chunk);child.on("error",reject);child.on("close",code=>code===0?resolve(output.trim()):reject(new Error("无法读取 GitHub 仓库地址")));
+    });
+    if(!/^https:\/\/github\.com\/lianni0125-hub\/MO-mochao-short-drama(?:\.git)?$/i.test(remote))throw new Error("当前项目不是从墨潮官方 GitHub 仓库安装，已停止自动更新");
+    setUpdateProgress(35,"正在下载最新版本");
+    await runProcess("git",["fetch","origin","main"],5*60*1000);
+    setUpdateProgress(58,"正在安全合并新版源码");
+    await runProcess("git",["merge","--ff-only","origin/main"],2*60*1000);
+    setUpdateProgress(76,"正在安装或校验项目依赖");
+    await runProcess(process.platform==="win32"?"npm.cmd":"npm",["install","--no-audit","--no-fund"],10*60*1000);
+    const updated=readLocalVersion();
+    systemUpdateState={status:"completed",progress:100,message:`已更新至 v${updated.version}，请重启应用完成升级`,startedAt:systemUpdateState.startedAt,finishedAt:new Date().toISOString(),restartRequired:true,error:null,version:updated.version};
+  }catch(error){systemUpdateState={...systemUpdateState,status:"failed",message:"更新未完成，现有版本仍可继续使用",finishedAt:new Date().toISOString(),restartRequired:false,error:error.message||String(error)};}
 };
 
 const projectRow = id => parseProject(get("SELECT * FROM projects WHERE id=@id AND deleted_at IS NULL", { id: Number(id) }));
@@ -55,11 +86,20 @@ app.get("/api/health", (_req, res) => { const p=activeProvider(); res.json({ ok:
 app.get("/api/version",async(_req,res)=>{
   const current=readLocalVersion();
   try{
-    const response=await fetch(`${remoteVersionUrl}?t=${Date.now()}`,{headers:{"User-Agent":"MO-mochao-short-drama-version-check"},signal:AbortSignal.timeout(8000)});
-    if(!response.ok)throw new Error(`GitHub ${response.status}`);
-    const latest=await response.json();
+    const latest=await readRemoteVersion();
     res.json({current,latest,updateAvailable:compareVersions(latest.version,current.version)>0,checkedAt:new Date().toISOString()});
   }catch(error){res.json({current,latest:null,updateAvailable:false,checkError:"暂时无法连接 GitHub 检查更新",checkedAt:new Date().toISOString()});}
+});
+app.get("/api/system-update",(_req,res)=>res.json(systemUpdateState));
+app.post("/api/system-update",async(req,res)=>{
+  if(req.body?.confirm!==true)return res.status(400).json({error:"请先确认开始版本更新"});
+  if(systemUpdateState.status==="running")return res.status(409).json({error:"版本更新正在进行中"});
+  const workbench=getWorkbenchState();
+  if(Number(workbench.running||0)+Number(workbench.queued||0)>0)return res.status(409).json({error:"当前仍有生成任务，请等待任务完成或取消后再更新"});
+  try{const current=readLocalVersion(),latest=await readRemoteVersion();if(compareVersions(latest.version,current.version)<=0)return res.status(409).json({error:"当前已经是最新版本"});}catch(error){return res.status(503).json({error:"暂时无法连接 GitHub 验证最新版本，请稍后重试"});}
+  systemUpdateState={status:"running",progress:2,message:"正在准备安全更新",startedAt:new Date().toISOString(),finishedAt:null,restartRequired:false,error:null};
+  void performSystemUpdate();
+  res.status(202).json(systemUpdateState);
 });
 app.get("/api/workbench", (_req,res) => res.json(getWorkbenchState()));
 app.put("/api/workbench", (req,res) => { try { res.json(configureWorkbench(req.body||{})); } catch(error) { res.status(409).json({error:error.message}); } });

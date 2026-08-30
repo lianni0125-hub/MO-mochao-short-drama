@@ -148,18 +148,24 @@ $("#newProject").onclick=()=>$("#projectDialog").showModal();
 $("#contactAuthorButton").onclick=()=>$("#contactAuthorDialog").showModal();
 let versionState=null;
 const renderVersionDialog=()=>{
-  const content=$("#versionDialogContent"),title=$("#versionDialogTitle"),link=$("#versionGithubLink");
+  const content=$("#versionDialogContent"),title=$("#versionDialogTitle"),link=$("#versionGithubLink"),install=$("#versionInstallButton");
   if(!versionState){title.textContent="版本更新";content.innerHTML='<p class="muted">正在检查 GitHub 上的最新版本…</p>';return;}
   const {current,latest,updateAvailable,checkError}=versionState;
+  install.classList.toggle("hidden",!updateAvailable);
   if(checkError){title.textContent="暂时无法检查更新";content.innerHTML=`<p>${esc(checkError)}</p><p class="muted">当前版本：v${esc(current?.version||"未知")}。这不会影响本地创作功能。</p>`;return;}
   const shown=updateAvailable?latest:current;
   title.textContent=updateAvailable?`发现新版本 v${latest.version}`:"已是最新版本";
   link.href=shown?.url||"https://github.com/lianni0125-hub/MO-mochao-short-drama";
   const notes=(shown?.notes||[]).map(note=>`<li>${esc(note)}</li>`).join("");
-  content.innerHTML=`<div class="version-badges"><span>当前 v${esc(current.version)}</span>${updateAvailable?`<strong>最新 v${esc(latest.version)}</strong>`:""}</div><h3>${esc(shown?.title||"版本说明")}</h3><ul>${notes||"<li>暂无更新说明</li>"}</ul>${updateAvailable?'<p class="version-safety-note">更新前请备份本地 <code>data/</code> 和 <code>.env</code>。程序不会自动覆盖本地数据或密钥。</p>':""}`;
+  content.innerHTML=`<div class="version-badges"><span>当前 v${esc(current.version)}</span>${updateAvailable?`<strong>最新 v${esc(latest.version)}</strong>`:""}</div><h3>${esc(shown?.title||"版本说明")}</h3><ul>${notes||"<li>暂无更新说明</li>"}</ul>${updateAvailable?'<p class="version-safety-note">一键更新只更新程序源码和依赖，不会覆盖 <code>data/</code> 或 <code>.env</code>。更新时不能有正在运行的生成任务或未提交的源码修改。</p>':""}`;
 };
 const checkVersion=async()=>{try{versionState=await api("/api/version");}catch(error){versionState={current:{version:"未知"},checkError:error.message};}const button=$("#versionUpdateButton");button.classList.toggle("update-available",Boolean(versionState.updateAvailable));button.textContent=versionState.updateAvailable?"版本更新！":"版本更新";renderVersionDialog();};
-$("#versionUpdateButton").onclick=()=>{$("#versionUpdateDialog").showModal();checkVersion();};
+let systemUpdatePoll=null;
+const renderSystemUpdate=update=>{const box=$("#systemUpdateProgress"),error=$("#systemUpdateError"),install=$("#versionInstallButton");if(!update||update.status==="idle"){box.classList.add("hidden");return;}box.classList.remove("hidden");$("#systemUpdateMessage").textContent=update.message||"正在更新";$("#systemUpdatePercent").textContent=`${Number(update.progress||0)}%`;$("#systemUpdateBar").value=Number(update.progress||0);error.classList.toggle("hidden",!update.error);error.textContent=update.error||"";install.disabled=update.status==="running";install.classList.toggle("hidden",update.status==="running"||update.status==="completed");if(update.status==="completed"){$("#versionDialogTitle").textContent="更新完成 · 请重启应用";clearInterval(systemUpdatePoll);systemUpdatePoll=null;}if(update.status==="failed"){clearInterval(systemUpdatePoll);systemUpdatePoll=null;}};
+const pollSystemUpdate=async()=>{try{renderSystemUpdate(await api("/api/system-update"));}catch(error){renderSystemUpdate({status:"failed",progress:0,message:"无法读取更新进度",error:error.message});}};
+const startSystemUpdatePolling=()=>{clearInterval(systemUpdatePoll);pollSystemUpdate();systemUpdatePoll=setInterval(pollSystemUpdate,1000);};
+$("#versionInstallButton").onclick=async()=>{if(!confirm("确定立即更新到 GitHub 最新版本吗？\n\n更新不会覆盖项目数据和 API 配置；更新完成后需要重启应用。"))return;try{await api("/api/system-update",{method:"POST",body:JSON.stringify({confirm:true})});startSystemUpdatePolling();}catch(error){renderSystemUpdate({status:"failed",progress:0,message:"无法开始更新",error:error.message});}};
+$("#versionUpdateButton").onclick=()=>{$("#versionUpdateDialog").showModal();checkVersion();pollSystemUpdate();};
 let providerPresets=[],embeddingProviderPresets=[],settingsInitialEmbeddingProvider="";
 const offlineGenerationOption=document.querySelector('#settingsForm select[name="provider"] option[value="mock"]');if(offlineGenerationOption)offlineGenerationOption.textContent="离线界面演示";
 const embeddingReady=()=>Boolean(state.project?.storyMemory?.stats?.embeddingConfigured);
