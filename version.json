@@ -1,11 +1,11 @@
 {
-  "version": "1.1.1",
-  "title": "AutoDL 发布适配",
+  "version": "1.1.2",
+  "title": "发布文档优化",
   "publishedAt": "2026-08-30",
   "notes": [
-    "GitHub 发布版默认监听 AutoDL WebUI 端口 6008",
-    "本地已有 .env 配置保持不变，仍可继续使用 3210 端口",
-    "README 新增 AI应用—应用广场镜像使用说明"
+    "README 全面调整为面向使用者的正式说明",
+    "补充 AutoDL AI应用—应用广场与源码部署两种方式",
+    "明确本地端口配置、模型连接、数据安全和升级流程"
   ],
   "url": "https://github.com/lianni0125-hub/MO-mochao-short-drama"
 }
