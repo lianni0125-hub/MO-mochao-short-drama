@@ -157,7 +157,7 @@ const renderVersionDialog=()=>{
   const ignored=Boolean(updateAvailable&&latest?.version===ignoredVersion());
   ignore.classList.toggle("hidden",!updateAvailable);
   ignore.disabled=ignored;
-  ignore.textContent=ignored?"已忽略此版本":"忽略此版本";
+  ignore.textContent=ignored?"已忽略":"忽略";
   if(checkError){title.textContent="暂时无法检查更新";content.innerHTML=`<p>${esc(checkError)}</p><p class="muted">当前版本：v${esc(current?.version||"未知")}。这不会影响本地创作功能。</p>`;return;}
   const shown=updateAvailable?latest:current;
   title.textContent=updateAvailable?`发现新版本 v${latest.version}`:"已是最新版本";
