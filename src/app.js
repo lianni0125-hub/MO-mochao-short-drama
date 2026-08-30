@@ -23,7 +23,18 @@ app.use(express.json({ limit: "5mb" }));
 const localVersionPath=path.join(config.root,"version.json");
 const remoteVersionUrl="https://raw.githubusercontent.com/lianni0125-hub/MO-mochao-short-drama/main/version.json";
 const readLocalVersion=()=>JSON.parse(fs.readFileSync(localVersionPath,"utf8"));
-const readRemoteVersion=async()=>{const response=await fetch(`${remoteVersionUrl}?t=${Date.now()}`,{headers:{"User-Agent":"MO-mochao-short-drama-version-check"},signal:AbortSignal.timeout(8000)});if(!response.ok)throw new Error(`GitHub ${response.status}`);return response.json();};
+const validateVersionManifest=value=>{if(!value||typeof value!=="object"||!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(String(value.version||"")))throw new Error("版本清单格式不正确");return value;};
+const fetchVersionJson=async(url,timeoutMs=10000)=>{const response=await fetch(url,{headers:{"User-Agent":"MO-mochao-short-drama-version-check","Accept":"application/json"},signal:AbortSignal.timeout(timeoutMs)});if(!response.ok)throw new Error(`HTTP ${response.status}`);return validateVersionManifest(await response.json());};
+const readRemoteVersion=async()=>{
+  const stamp=Date.now(),attempts=[
+    {source:"GitHub Raw",read:()=>fetchVersionJson(`${remoteVersionUrl}?t=${stamp}`,8000)},
+    {source:"GitHub API",read:async()=>{const response=await fetch(`https://api.github.com/repos/lianni0125-hub/MO-mochao-short-drama/contents/version.json?ref=main&t=${stamp}`,{headers:{"User-Agent":"MO-mochao-short-drama-version-check","Accept":"application/vnd.github+json"},signal:AbortSignal.timeout(10000)});if(!response.ok)throw new Error(`HTTP ${response.status}`);const body=await response.json();if(!body?.content)throw new Error("没有返回版本文件");return validateVersionManifest(JSON.parse(Buffer.from(String(body.content).replace(/\s/g,""),"base64").toString("utf8")));}},
+    {source:"jsDelivr",read:()=>fetchVersionJson(`https://cdn.jsdelivr.net/gh/lianni0125-hub/MO-mochao-short-drama@main/version.json?t=${stamp}`,10000)}
+  ];
+  const errors=[];
+  for(const attempt of attempts){try{return {manifest:await attempt.read(),source:attempt.source};}catch(error){errors.push(`${attempt.source}: ${error.message}`);}}
+  throw new Error(errors.join("；"));
+};
 const compareVersions=(left,right)=>{
   const a=String(left||"0").split(".").map(part=>Number(part)||0),b=String(right||"0").split(".").map(part=>Number(part)||0);
   for(let index=0;index<Math.max(a.length,b.length);index++){if((a[index]||0)!==(b[index]||0))return (a[index]||0)-(b[index]||0);}
@@ -86,8 +97,8 @@ app.get("/api/health", (_req, res) => { const p=activeProvider(); res.json({ ok:
 app.get("/api/version",async(_req,res)=>{
   const current=readLocalVersion();
   try{
-    const latest=await readRemoteVersion();
-    res.json({current,latest,updateAvailable:compareVersions(latest.version,current.version)>0,checkedAt:new Date().toISOString()});
+    const {manifest:latest,source}=await readRemoteVersion();
+    res.json({current,latest,source,updateAvailable:compareVersions(latest.version,current.version)>0,checkedAt:new Date().toISOString()});
   }catch(error){res.json({current,latest:null,updateAvailable:false,checkError:"暂时无法连接 GitHub 检查更新",checkedAt:new Date().toISOString()});}
 });
 app.get("/api/system-update",(_req,res)=>res.json(systemUpdateState));
@@ -96,7 +107,7 @@ app.post("/api/system-update",async(req,res)=>{
   if(systemUpdateState.status==="running")return res.status(409).json({error:"版本更新正在进行中"});
   const workbench=getWorkbenchState();
   if(Number(workbench.running||0)+Number(workbench.queued||0)>0)return res.status(409).json({error:"当前仍有生成任务，请等待任务完成或取消后再更新"});
-  try{const current=readLocalVersion(),latest=await readRemoteVersion();if(compareVersions(latest.version,current.version)<=0)return res.status(409).json({error:"当前已经是最新版本"});}catch(error){return res.status(503).json({error:"暂时无法连接 GitHub 验证最新版本，请稍后重试"});}
+  try{const current=readLocalVersion(),{manifest:latest}=await readRemoteVersion();if(compareVersions(latest.version,current.version)<=0)return res.status(409).json({error:"当前已经是最新版本"});}catch(error){return res.status(503).json({error:"暂时无法连接版本服务验证最新版本，请稍后重试"});}
   systemUpdateState={status:"running",progress:2,message:"正在准备安全更新",startedAt:new Date().toISOString(),finishedAt:null,restartRequired:false,error:null};
   void performSystemUpdate();
   res.status(202).json(systemUpdateState);
