@@ -14,6 +14,7 @@ const { run } = await import("../src/db.js");
 const { searchIdeaKnowledge, cleanupAutomaticKnowledge, seedAutomaticSources } = await import("../src/knowledge.js");
 const { novelDescriptionIssues, novelPerspectiveIssue, splitNovelLongParagraphs } = await import("../src/llm.js");
 const { buildEpisodeNovelPrompt, buildOutlineDramaticBatchPrompt } = await import("../src/prompts.js");
+const { createWorkspaceBackup, restoreWorkspaceBackup, validateWorkspaceBackup } = await import("../src/backup.js");
 const server = app.listen(0, "127.0.0.1");
 await new Promise(resolve => server.once("listening", resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -27,6 +28,8 @@ test("健康检查和完整创作主链", async () => {
   ];
   const scopedNovel=buildEpisodeNovelPrompt({narrative_person:"first",emotion_intensity:"strong"},scopedConstraints,[],{episode_no:6},[],{generationTarget:{}},{});assert.match(scopedNovel,/主角最终必须回家/);assert.match(scopedNovel,/苏婉清发现录音/);assert.doesNotMatch(scopedNovel,/反派身份不得揭晓/);assert.match(scopedNovel,/适用EP06/);
   const scopedBatch=buildOutlineDramaticBatchPrompt({total_episodes:10,tags:[]},scopedConstraints,[],[],[{episode_no:6}],[],[]);assert.match(scopedBatch,/苏婉清发现录音/);assert.doesNotMatch(scopedBatch,/反派身份不得揭晓/);
+  const sinkingBatch=buildOutlineDramaticBatchPrompt({total_episodes:10,tags:[],story_mode:"miniprogram"},[],[],[],[{episode_no:1}],[],[]);assert.match(sinkingBatch,/软肋/);assert.match(sinkingBatch,/反常配合/);assert.match(sinkingBatch,/荒谬私利/);assert.match(sinkingBatch,/同等级、立即生效/);
+  const normalBatch=buildOutlineDramaticBatchPrompt({total_episodes:10,tags:[],story_mode:"normal"},[],[],[],[{episode_no:1}],[],[]);assert.doesNotMatch(normalBatch,/反常配合/);
   assert.equal(novelPerspectiveIssue(`我推开门。\n\n「他怎么还没来？」`,"first"),"");
   assert.match(novelPerspectiveIssue(`方野推开门。\n\n「我来晚了。」`,"first"),/第一人称/);
   assert.equal(novelPerspectiveIssue(`方野推开门。\n\n「我来晚了。」`,"third"),"");
@@ -93,6 +96,7 @@ test("健康检查和完整创作主链", async () => {
   const refusedClear=await request(`/api/projects/${id}/story-memory`,{method:"DELETE",body:JSON.stringify({confirm:false})});assert.equal(refusedClear.r.status,400);
   const cleared=await request(`/api/projects/${id}/story-memory`,{method:"DELETE",body:JSON.stringify({confirm:true})});assert.equal(cleared.r.status,200);assert.equal(cleared.body.cleared,true);assert.ok(cleared.body.records>0);
   const afterClear=(await request(`/api/projects/${id}`)).body;assert.equal(afterClear.storyMemory.stats.status,"empty");assert.equal(afterClear.storyMemory.stats.events,0);assert.equal(afterClear.storyMemory.stats.entities,0);assert.equal(afterClear.episodes.filter(item=>item.script).length,6);assert.ok(afterClear.artifacts.some(item=>item.type==="characters"));
+  const workspaceBackup=createWorkspaceBackup("test");assert.equal(validateWorkspaceBackup(workspaceBackup).format,"mochao-workspace-backup");assert.equal(workspaceBackup.tables.projects.length,1);assert.equal(workspaceBackup.tables.episodes.length,6);assert.equal("jobs" in workspaceBackup.tables,false);assert.equal("generations" in workspaceBackup.tables,false);assert.doesNotMatch(JSON.stringify(workspaceBackup),/API_KEY/);run("UPDATE projects SET title='临时改名' WHERE id=@id",{id});const restoredWorkspace=restoreWorkspaceBackup(workspaceBackup);assert.equal(restoredWorkspace.projects,1);assert.equal((await request(`/api/projects/${id}`)).body.title,afterClear.title);assert.equal(restoredWorkspace.needsVectorRebuild,true);
   const workbenchOff=await request("/api/workbench");assert.equal(workbenchOff.body.parallelEnabled,false);assert.equal(workbenchOff.body.maxTasks,10);assert.equal(workbenchOff.body.effectiveConcurrency,1);
   const workbenchOn=await request("/api/workbench",{method:"PUT",body:JSON.stringify({parallel_enabled:true,concurrency_mode:"manual",concurrency_limit:2})});assert.equal(workbenchOn.body.parallelEnabled,true);assert.equal(workbenchOn.body.effectiveConcurrency,2);assert.match(workbenchOn.body.sessionId,/^wb-/);
   const workbenchAuto=await request("/api/workbench",{method:"PUT",body:JSON.stringify({concurrency_mode:"auto"})});assert.equal(workbenchAuto.body.concurrencyMode,"auto");

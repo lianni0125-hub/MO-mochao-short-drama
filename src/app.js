@@ -14,10 +14,12 @@ import { enrichManualKnowledge, processKnowledgeBacklog, searchIdeaKnowledge, se
 import { cancelJob, configureWorkbench, continueJob, enqueueJob, getWorkbenchState, listJobs, writeEpisode } from "./jobs.js";
 import { canonicalTemplateId, listTemplates, templateContext, templateWritingGuide } from "./templates.js";
 import { builtinTemplateById } from "./builtin-templates.js";
+import { createWorkspaceBackup, restoreWorkspaceBackup, validateWorkspaceBackup } from "./backup.js";
 import { memorySnapshot } from "./memory.js";
 import { embeddingConfigured, testEmbeddingConnection } from "./embeddings.js";
 
 const upload = multer({ dest: config.uploadsDir, limits: { fileSize: 30 * 1024 * 1024 } });
+const backupUpload=multer({dest:config.uploadsDir,limits:{fileSize:250*1024*1024}});
 export const app = express();
 app.use(express.json({ limit: "5mb" }));
 
@@ -161,6 +163,8 @@ app.put("/api/settings/embedding",(req,res)=>{
 });
 app.post("/api/settings/embedding/test",async(req,res)=>{try{res.json(await testEmbeddingConnection(req.body));}catch(error){res.status(400).json({ok:false,error:error.message||String(error)});}});
 app.get("/api/meta", (_req, res) => res.json({ stages: STAGES }));
+app.get("/api/backup",(_req,res)=>{const backup=createWorkspaceBackup(readLocalVersion().version),stamp=new Date().toISOString().replace(/[:.]/g,"-");res.setHeader("Content-Type","application/vnd.mochao.backup+json; charset=utf-8");res.setHeader("Content-Disposition",`attachment; filename="mochao-workspace-${stamp}.mo-backup"`);res.send(JSON.stringify(backup));});
+app.post("/api/backup/restore",backupUpload.single("file"),(req,res)=>{const filePath=req.file?.path;try{if(req.body?.confirm!=="true")return res.status(400).json({error:"请先确认使用备份替换当前工作区"});if(!filePath)return res.status(400).json({error:"请选择 .mo-backup 备份文件"});const active=get("SELECT COUNT(*) count FROM jobs WHERE status IN ('queued','running')")?.count||0;if(active)return res.status(409).json({error:"仍有进行中或排队中的任务，请先完成或取消任务后再恢复备份"});const parsed=validateWorkspaceBackup(JSON.parse(fs.readFileSync(filePath,"utf8")));res.json(restoreWorkspaceBackup(parsed));}catch(error){res.status(400).json({error:error.message||String(error)});}finally{if(filePath&&fs.existsSync(filePath))try{fs.unlinkSync(filePath);}catch{}}});
 
 function purgeExpiredProjects(){
   const cutoff=new Date(Date.now()-7*24*60*60*1000).toISOString();
