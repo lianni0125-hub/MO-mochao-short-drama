@@ -1,12 +1,23 @@
 import { all, get } from "./db.js";
 import { DEFAULT_TEMPLATE } from "./default-template.js";
+import { BUILTIN_TEMPLATES, builtinTemplateById, builtinTemplateSummary } from "./builtin-templates.js";
 
 export function listTemplates(projectId){
-  const uploaded=all("SELECT id,project_id,name,original_name,kind,analysis_json,created_at FROM templates WHERE project_id IS NULL OR project_id=@id ORDER BY id DESC",{id:projectId}).map(x=>({...x,id:String(x.id),source:"uploaded",analysis:JSON.parse(x.analysis_json||"{}")}));
-  return [{id:"default",name:DEFAULT_TEMPLATE.name,kind:"builtin",source:"builtin",analysis:{planningSections:DEFAULT_TEMPLATE.planningSections,inferredScriptFormat:DEFAULT_TEMPLATE.scriptFormat,sourceAnalysis:DEFAULT_TEMPLATE.sourceAnalysis}},...uploaded];
+  const builtinNames=new Set(BUILTIN_TEMPLATES.map(template=>template.name));
+  const uploaded=all("SELECT id,project_id,name,original_name,kind,analysis_json,created_at FROM templates WHERE project_id IS NULL OR project_id=@id ORDER BY id DESC",{id:projectId})
+    .filter(row=>!builtinNames.has(row.name))
+    .map(x=>({...x,id:String(x.id),source:"uploaded",analysis:JSON.parse(x.analysis_json||"{}")}));
+  return [...BUILTIN_TEMPLATES.map(builtinTemplateSummary),...uploaded];
+}
+export function canonicalTemplateId(templateId){
+  const normalized=String(templateId||"default");
+  if(builtinTemplateById(normalized))return normalized;
+  const row=get("SELECT name FROM templates WHERE id=@id",{id:Number(normalized)});
+  return BUILTIN_TEMPLATES.find(template=>template.name===row?.name)?.id||normalized;
 }
 export function templateContext(project){
-  if(!project.template_id||project.template_id==="default")return {id:"default",name:DEFAULT_TEMPLATE.name,text:JSON.stringify(DEFAULT_TEMPLATE,null,2),analysis:{inferredScriptFormat:DEFAULT_TEMPLATE.scriptFormat}};
+  const builtin=builtinTemplateById(canonicalTemplateId(project.template_id));
+  if(builtin)return {id:builtin.id,name:builtin.name,source:"builtin",text:JSON.stringify(builtin,null,2),analysis:{planningSections:builtin.planningSections,inferredScriptFormat:builtin.scriptFormat,sourceAnalysis:builtin.sourceAnalysis}};
   const row=get("SELECT * FROM templates WHERE id=@id",{id:Number(project.template_id)});
   return row?{...row,id:String(row.id),text:row.extracted_text||"",analysis:JSON.parse(row.analysis_json||"{}")}:{id:"default",name:DEFAULT_TEMPLATE.name,text:JSON.stringify(DEFAULT_TEMPLATE,null,2),analysis:{inferredScriptFormat:DEFAULT_TEMPLATE.scriptFormat}};
 }
@@ -38,7 +49,7 @@ export function templateWritingGuide(template){
   const text=String(template?.text||"");
   const scriptStart=text.search(/(?:^|\n)\s*(?:中文\s*DRAFT\s*\n)?\s*EP\s*0*1\b/i);
   let sample=raw.sampleExcerpt||"";
-  if(template?.id!=="default"&&!sample&&scriptStart>=0){
+  if(template?.source!=="builtin"&&!sample&&scriptStart>=0){
     const script=text.slice(scriptStart);
     const thirdEpisode=script.search(/\n\s*EP\s*0*3\b/i);
     sample=script.slice(0,thirdEpisode>0?thirdEpisode:Math.min(script.length,6000));

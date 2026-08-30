@@ -12,7 +12,8 @@ import { generate, testConnection } from "./llm.js";
 import { analyzeDocx, exportProjectDocx } from "./documents.js";
 import { enrichManualKnowledge, processKnowledgeBacklog, searchIdeaKnowledge, searchKnowledge, updateAllSources, updateSource, validateRssSource } from "./knowledge.js";
 import { cancelJob, configureWorkbench, continueJob, enqueueJob, getWorkbenchState, listJobs, writeEpisode } from "./jobs.js";
-import { listTemplates, templateContext, templateWritingGuide } from "./templates.js";
+import { canonicalTemplateId, listTemplates, templateContext, templateWritingGuide } from "./templates.js";
+import { builtinTemplateById } from "./builtin-templates.js";
 import { memorySnapshot } from "./memory.js";
 import { embeddingConfigured, testEmbeddingConnection } from "./embeddings.js";
 
@@ -228,6 +229,7 @@ app.post("/api/trash/story-states/:id/restore",(req,res)=>{
 app.delete("/api/trash/story-states",(_req,res)=>{const result=run("DELETE FROM deleted_story_state");res.json({cleared:Number(result.changes||0)});});
 app.get("/api/projects/:id", requireProject, (req, res) => res.json({
   ...req.project,
+  template_id:canonicalTemplateId(req.project.template_id),
   constraints: constraintsFor(req.project.id), artifacts: artifactsFor(req.project.id),
   episodes: all("SELECT * FROM episodes WHERE project_id=@id ORDER BY episode_no", { id: req.project.id }),
   storyState: all("SELECT * FROM story_state WHERE project_id=@id ORDER BY category,subject", { id: req.project.id }),
@@ -256,7 +258,7 @@ app.patch("/api/projects/:id", requireProject, (req, res) => {
   });
   res.json(projectRow(req.project.id));
 });
-app.put("/api/projects/:id/template",requireProject,(req,res)=>{const templateId=String(req.body.template_id||"default");if(templateId!=="default"&&!get("SELECT id FROM templates WHERE id=@id AND (project_id IS NULL OR project_id=@pid)",{id:Number(templateId),pid:req.project.id}))return res.status(404).json({error:"模板不存在"});run("UPDATE projects SET template_id=@template,updated_at=@time WHERE id=@id",{template:templateId,time:now(),id:req.project.id});res.json({template_id:templateId});});
+app.put("/api/projects/:id/template",requireProject,(req,res)=>{const templateId=String(req.body.template_id||"default");if(!builtinTemplateById(templateId)&&!get("SELECT id FROM templates WHERE id=@id AND (project_id IS NULL OR project_id=@pid)",{id:Number(templateId),pid:req.project.id}))return res.status(404).json({error:"模板不存在"});run("UPDATE projects SET template_id=@template,updated_at=@time WHERE id=@id",{template:templateId,time:now(),id:req.project.id});res.json({template_id:templateId});});
 app.put("/api/projects/:id/emotion-intensity",requireProject,(req,res)=>{const value=req.body.emotion_intensity==="extreme"?"extreme":"strong";run("UPDATE projects SET emotion_intensity=@value,updated_at=@time WHERE id=@id",{value,time:now(),id:req.project.id});res.json({emotion_intensity:value});});
 app.put("/api/projects/:id/story-mode",requireProject,(req,res)=>{const value=req.body.story_mode==="miniprogram"?"miniprogram":"normal";run("UPDATE projects SET story_mode=@value,updated_at=@time WHERE id=@id",{value,time:now(),id:req.project.id});res.json({story_mode:value});});
 app.put("/api/projects/:id/narrative-person",requireProject,(req,res)=>{const value=req.body.narrative_person==="third"?"third":"first";run("UPDATE projects SET narrative_person=@value,updated_at=@time WHERE id=@id",{value,time:now(),id:req.project.id});res.json({narrative_person:value});});
