@@ -1,12 +1,13 @@
 {
-  "version": "1.2.7",
-  "title": "工作区备份与下沉模式优化",
+  "version": "1.2.8",
+  "title": "Windows 便携版与双通道自动更新",
   "publishedAt": "2026-08-30",
   "notes": [
-    "模型设置底部新增备份与恢复，可导出单个 .mo-backup 文件",
-    "支持选择或拖入备份，在新设备恢复全部项目、正文、剧情记忆、人物图片与自定义模板",
-    "备份明确排除 API Key、模型连接、任务记录、日志和向量值",
-    "优化下沉模式的神剧情设计：强化人物软肋、具体伤害机制、反常配合、荒谬私利与逐层背叛"
+    "GitHub Releases 新增 Windows 免安装便携包，解压后可双击启动",
+    "自动识别 Git 安装版与 Windows 便携版，并分别使用 Git 或 Release 安全更新",
+    "便携版更新前校验 SHA-256、建立恢复点，并永久保护 data 与 .env",
+    "新增标签发布工作流，可自动构建并上传便携包及校验文件"
   ],
+  "portableAsset": "MO-mochao-Windows-v1.2.8.zip",
   "url": "https://github.com/lianni0125-hub/MO-mochao-short-drama"
 }

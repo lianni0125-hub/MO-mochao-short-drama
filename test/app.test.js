@@ -15,12 +15,14 @@ const { searchIdeaKnowledge, cleanupAutomaticKnowledge, seedAutomaticSources } =
 const { novelDescriptionIssues, novelPerspectiveIssue, splitNovelLongParagraphs } = await import("../src/llm.js");
 const { buildEpisodeNovelPrompt, buildOutlineDramaticBatchPrompt } = await import("../src/prompts.js");
 const { createWorkspaceBackup, restoreWorkspaceBackup, validateWorkspaceBackup } = await import("../src/backup.js");
+const { detectInstallMode } = await import("../src/updater.js");
 const server = app.listen(0, "127.0.0.1");
 await new Promise(resolve => server.once("listening", resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const request = async (url, options={}) => { const r=await fetch(base+url,{headers:{"content-type":"application/json"},...options}); const body=r.status===204?null:await r.json(); return {r,body}; };
 
 test("健康检查和完整创作主链", async () => {
+  const installFixture=fs.mkdtempSync(path.join(os.tmpdir(),"mochao-install-mode-"));fs.mkdirSync(path.join(installFixture,".git"));assert.equal(detectInstallMode(installFixture),"git");fs.rmSync(path.join(installFixture,".git"),{recursive:true});fs.writeFileSync(path.join(installFixture,"portable.json"),"{}");fs.mkdirSync(path.join(installFixture,"runtime"));fs.writeFileSync(path.join(installFixture,"runtime","node.exe"),"");assert.equal(detectInstallMode(installFixture),"portable");fs.rmSync(path.join(installFixture,"runtime"),{recursive:true});assert.equal(detectInstallMode(installFixture),"unsupported");fs.rmSync(installFixture,{recursive:true,force:true});
   const scopedConstraints=[
     {kind:"hard",category:"ending",description:"主角最终必须回家",episode_start:null,episode_end:null},
     {kind:"hard",category:"character",description:"苏婉清发现录音",episode_start:6,episode_end:6},

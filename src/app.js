@@ -17,6 +17,7 @@ import { builtinTemplateById } from "./builtin-templates.js";
 import { createWorkspaceBackup, restoreWorkspaceBackup, validateWorkspaceBackup } from "./backup.js";
 import { memorySnapshot } from "./memory.js";
 import { embeddingConfigured, testEmbeddingConnection } from "./embeddings.js";
+import { detectInstallMode, preparePortableUpdate } from "./updater.js";
 
 const upload = multer({ dest: config.uploadsDir, limits: { fileSize: 30 * 1024 * 1024 } });
 const backupUpload=multer({dest:config.uploadsDir,limits:{fileSize:250*1024*1024}});
@@ -53,8 +54,17 @@ const runProcess=(command,args,timeoutMs)=>new Promise((resolve,reject)=>{
   child.on("close",code=>{clearTimeout(timer);code===0?resolve():reject(new Error(`${command} 执行失败${stderr?`：${stderr.slice(-300)}`:""}`));});
 });
 const setUpdateProgress=(progress,message)=>{systemUpdateState={...systemUpdateState,status:"running",progress,message};};
-const performSystemUpdate=async()=>{
+const performSystemUpdate=async latest=>{
   try{
+    const installMode=detectInstallMode(config.root);
+    if(installMode==="portable"){
+      setUpdateProgress(8,"正在读取 GitHub Release 便携版本");
+      const result=await preparePortableUpdate({root:config.root,dataDir:config.dataDir,latest,onProgress:setUpdateProgress});
+      systemUpdateState={...systemUpdateState,status:"running",progress:94,message:`v${result.version} 已验证，正在安全替换并重启`,restartRequired:true,error:null,installMode};
+      setTimeout(()=>process.exit(0),1200);
+      return;
+    }
+    if(installMode!=="git")throw new Error("无法识别当前安装方式；请从官方 Git 仓库或 Windows 便携包安装");
     setUpdateProgress(8,"正在检查源码状态");
     await runProcess("git",["diff","--quiet","HEAD","--"],30000);
     setUpdateProgress(18,"正在连接官方 GitHub 仓库");
@@ -69,7 +79,7 @@ const performSystemUpdate=async()=>{
     setUpdateProgress(76,"正在安装或校验项目依赖");
     await runProcess(process.platform==="win32"?"npm.cmd":"npm",["install","--no-audit","--no-fund"],10*60*1000);
     const updated=readLocalVersion();
-    systemUpdateState={status:"completed",progress:100,message:`已更新至 v${updated.version}，请重启应用完成升级`,startedAt:systemUpdateState.startedAt,finishedAt:new Date().toISOString(),restartRequired:true,error:null,version:updated.version};
+    systemUpdateState={status:"completed",progress:100,message:`已更新至 v${updated.version}，请重启应用完成升级`,startedAt:systemUpdateState.startedAt,finishedAt:new Date().toISOString(),restartRequired:true,error:null,version:updated.version,installMode};
   }catch(error){systemUpdateState={...systemUpdateState,status:"failed",message:"更新未完成，现有版本仍可继续使用",finishedAt:new Date().toISOString(),restartRequired:false,error:error.message||String(error)};}
 };
 
@@ -98,11 +108,11 @@ function upsertArtifact(projectId, type, content, status = "draft") {
 
 app.get("/api/health", (_req, res) => { const p=activeProvider(); res.json({ ok:true,provider:p.id,providerLabel:p.label,model:p.model,apiKeyConfigured:Boolean(p.apiKey) }); });
 app.get("/api/version",async(_req,res)=>{
-  const current=readLocalVersion();
+  const current=readLocalVersion(),installMode=detectInstallMode(config.root);
   try{
     const {manifest:latest,source}=await readRemoteVersion();
-    res.json({current,latest,source,updateAvailable:compareVersions(latest.version,current.version)>0,checkedAt:new Date().toISOString()});
-  }catch(error){res.json({current,latest:null,updateAvailable:false,checkError:"暂时无法连接 GitHub 检查更新",checkedAt:new Date().toISOString()});}
+    res.json({current,latest,source,installMode,updateAvailable:compareVersions(latest.version,current.version)>0,checkedAt:new Date().toISOString()});
+  }catch(error){res.json({current,latest:null,installMode,updateAvailable:false,checkError:"暂时无法连接 GitHub 检查更新",checkedAt:new Date().toISOString()});}
 });
 app.get("/api/system-update",(_req,res)=>res.json(systemUpdateState));
 app.post("/api/system-update",async(req,res)=>{
@@ -110,9 +120,9 @@ app.post("/api/system-update",async(req,res)=>{
   if(systemUpdateState.status==="running")return res.status(409).json({error:"版本更新正在进行中"});
   const workbench=getWorkbenchState();
   if(Number(workbench.running||0)+Number(workbench.queued||0)>0)return res.status(409).json({error:"当前仍有生成任务，请等待任务完成或取消后再更新"});
-  try{const current=readLocalVersion(),{manifest:latest}=await readRemoteVersion();if(compareVersions(latest.version,current.version)<=0)return res.status(409).json({error:"当前已经是最新版本"});}catch(error){return res.status(503).json({error:"暂时无法连接版本服务验证最新版本，请稍后重试"});}
+  let latest;try{const current=readLocalVersion(),remote=await readRemoteVersion();latest=remote.manifest;if(compareVersions(latest.version,current.version)<=0)return res.status(409).json({error:"当前已经是最新版本"});}catch(error){return res.status(503).json({error:"暂时无法连接版本服务验证最新版本，请稍后重试"});}
   systemUpdateState={status:"running",progress:2,message:"正在准备安全更新",startedAt:new Date().toISOString(),finishedAt:null,restartRequired:false,error:null};
-  void performSystemUpdate();
+  void performSystemUpdate(latest);
   res.status(202).json(systemUpdateState);
 });
 app.get("/api/workbench", (_req,res) => res.json(getWorkbenchState()));

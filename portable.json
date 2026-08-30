@@ -1,0 +1,6 @@
+{
+  "format": "mochao-windows-portable",
+  "formatVersion": 1,
+  "entry": "src/server.js",
+  "protectedPaths": ["data", ".env"]
+}

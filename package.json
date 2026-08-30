@@ -1,6 +1,6 @@
 {
   "name": "ai-short-drama-writer",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "private": true,
   "type": "module",
   "description": "本地优先的 AI 短剧自动编剧工作台",
@@ -8,6 +8,7 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "start:autodl": "bash scripts/autodl-start.sh",
+    "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1",
     "test": "node --test --test-concurrency=1",
     "update:sources": "node src/jobs/update-sources.js"
   },

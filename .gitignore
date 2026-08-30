@@ -17,3 +17,4 @@ server*.log
 .vscode/
 .idea/
 tmp/
+dist/

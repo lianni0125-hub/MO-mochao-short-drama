@@ -152,7 +152,7 @@ const ignoredVersion=()=>localStorage.getItem(ignoredVersionKey)||"";
 const renderVersionDialog=()=>{
   const content=$("#versionDialogContent"),title=$("#versionDialogTitle"),link=$("#versionGithubLink"),install=$("#versionInstallButton"),ignore=$("#versionIgnoreButton");
   if(!versionState){title.textContent="版本更新";content.innerHTML='<p class="muted">正在检查 GitHub 上的最新版本…</p>';return;}
-  const {current,latest,updateAvailable,checkError}=versionState;
+  const {current,latest,updateAvailable,checkError,installMode}=versionState;
   install.classList.toggle("hidden",!updateAvailable);
   const ignored=Boolean(updateAvailable&&latest?.version===ignoredVersion());
   ignore.classList.toggle("hidden",!updateAvailable);
@@ -163,16 +163,18 @@ const renderVersionDialog=()=>{
   title.textContent=updateAvailable?`发现新版本 v${latest.version}`:"已是最新版本";
   link.href=shown?.url||"https://github.com/lianni0125-hub/MO-mochao-short-drama";
   const notes=(shown?.notes||[]).map(note=>`<li>${esc(note)}</li>`).join("");
-  content.innerHTML=`<div class="version-badges"><span>当前 v${esc(current.version)}</span>${updateAvailable?`<strong>最新 v${esc(latest.version)}</strong>`:""}</div><h3>${esc(shown?.title||"版本说明")}</h3><ul>${notes||"<li>暂无更新说明</li>"}</ul>${updateAvailable?'<p class="version-safety-note">一键更新只更新程序源码和依赖，不会覆盖 <code>data/</code> 或 <code>.env</code>。更新时不能有正在运行的生成任务或未提交的源码修改。</p>':""}`;
+  const modeText=installMode==="portable"?"Windows 便携版":installMode==="git"?"Git 安装版":"未识别安装方式",safety=installMode==="portable"?'将从 GitHub Release 下载并校验便携包，替换前自动建立恢复点；<code>data/</code> 与 <code>.env</code> 不会被覆盖，安装后应用会自动重启。':'只更新 Git 源码和依赖，不会覆盖 <code>data/</code> 或 <code>.env</code>；更新时不能有未提交的源码修改，完成后需要重启应用。';
+  content.innerHTML=`<div class="version-badges"><span>当前 v${esc(current.version)}</span>${updateAvailable?`<strong>最新 v${esc(latest.version)}</strong>`:""}<span>${modeText}</span></div><h3>${esc(shown?.title||"版本说明")}</h3><ul>${notes||"<li>暂无更新说明</li>"}</ul>${updateAvailable?`<p class="version-safety-note">${safety}</p>`:""}`;
 };
 let versionCheckTimer=null,versionCheckInFlight=null;
 const scheduleVersionCheck=delay=>{clearTimeout(versionCheckTimer);versionCheckTimer=setTimeout(()=>checkVersion(),delay);};
 const checkVersion=async()=>{if(versionCheckInFlight)return versionCheckInFlight;versionCheckInFlight=(async()=>{try{versionState=await api("/api/version");}catch(error){versionState={current:{version:"未知"},checkError:error.message};}const button=$("#versionUpdateButton"),ignored=Boolean(versionState.updateAvailable&&versionState.latest?.version===ignoredVersion());button.classList.toggle("update-available",Boolean(versionState.updateAvailable&&!ignored));button.textContent=versionState.updateAvailable&&!ignored?"版本更新！":"版本更新";renderVersionDialog();scheduleVersionCheck(versionState.checkError?30*1000:30*60*1000);})();try{return await versionCheckInFlight;}finally{versionCheckInFlight=null;}};
 let systemUpdatePoll=null;
+let portableRestartWaiting=false;
 const renderSystemUpdate=update=>{const box=$("#systemUpdateProgress"),error=$("#systemUpdateError"),install=$("#versionInstallButton");if(!update||update.status==="idle"){box.classList.add("hidden");return;}box.classList.remove("hidden");$("#systemUpdateMessage").textContent=update.message||"正在更新";$("#systemUpdatePercent").textContent=`${Number(update.progress||0)}%`;$("#systemUpdateBar").value=Number(update.progress||0);error.classList.toggle("hidden",!update.error);error.textContent=update.error||"";install.disabled=update.status==="running";install.classList.toggle("hidden",update.status==="running"||update.status==="completed");if(update.status==="completed"){$("#versionDialogTitle").textContent="更新完成 · 请重启应用";clearInterval(systemUpdatePoll);systemUpdatePoll=null;}if(update.status==="failed"){clearInterval(systemUpdatePoll);systemUpdatePoll=null;}};
-const pollSystemUpdate=async()=>{try{renderSystemUpdate(await api("/api/system-update"));}catch(error){renderSystemUpdate({status:"failed",progress:0,message:"无法读取更新进度",error:error.message});}};
+const pollSystemUpdate=async()=>{try{const update=await api("/api/system-update");if(portableRestartWaiting&&update.status==="idle"){portableRestartWaiting=false;location.reload();return;}renderSystemUpdate(update);}catch(error){if(portableRestartWaiting){renderSystemUpdate({status:"running",progress:96,message:"应用正在安全重启，请稍候",error:null});return;}renderSystemUpdate({status:"failed",progress:0,message:"无法读取更新进度",error:error.message});}};
 const startSystemUpdatePolling=()=>{clearInterval(systemUpdatePoll);pollSystemUpdate();systemUpdatePoll=setInterval(pollSystemUpdate,1000);};
-$("#versionInstallButton").onclick=async()=>{if(!confirm("确定立即更新到 GitHub 最新版本吗？\n\n更新不会覆盖项目数据和 API 配置；更新完成后需要重启应用。"))return;try{await api("/api/system-update",{method:"POST",body:JSON.stringify({confirm:true})});startSystemUpdatePolling();}catch(error){renderSystemUpdate({status:"failed",progress:0,message:"无法开始更新",error:error.message});}};
+$("#versionInstallButton").onclick=async()=>{const portable=versionState?.installMode==="portable",message=portable?"确定下载并安装最新 Windows 便携版吗？\n\n系统会校验更新包、建立恢复点并自动重启；项目数据和 API 配置不会被覆盖。":"确定立即更新到 GitHub 最新版本吗？\n\n更新不会覆盖项目数据和 API 配置；更新完成后需要重启应用。";if(!confirm(message))return;try{portableRestartWaiting=portable;await api("/api/system-update",{method:"POST",body:JSON.stringify({confirm:true})});startSystemUpdatePolling();}catch(error){portableRestartWaiting=false;renderSystemUpdate({status:"failed",progress:0,message:"无法开始更新",error:error.message});}};
 $("#versionIgnoreButton").onclick=()=>{const version=versionState?.latest?.version;if(!version)return;localStorage.setItem(ignoredVersionKey,version);checkVersion();toast(`已忽略 v${version} 的更新提醒`);};
 $("#versionUpdateButton").onclick=()=>{$("#versionUpdateDialog").showModal();checkVersion();pollSystemUpdate();};
 window.addEventListener("online",()=>checkVersion());
