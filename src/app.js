@@ -9,7 +9,7 @@ import { ARTIFACT_TITLES, STAGES, canonicalRelationshipSubject, parseArtifact, p
 import { buildCharacterImagePromptPrompt, buildStagePrompt } from "./prompts.js";
 import { generate, testConnection } from "./llm.js";
 import { analyzeDocx, exportProjectDocx } from "./documents.js";
-import { searchKnowledge, updateAllSources, updateSource } from "./knowledge.js";
+import { enrichManualKnowledge, processKnowledgeBacklog, searchIdeaKnowledge, searchKnowledge, updateAllSources, updateSource, validateRssSource } from "./knowledge.js";
 import { cancelJob, configureWorkbench, continueJob, enqueueJob, getWorkbenchState, listJobs, writeEpisode } from "./jobs.js";
 import { listTemplates, templateContext, templateWritingGuide } from "./templates.js";
 import { memorySnapshot } from "./memory.js";
@@ -18,6 +18,15 @@ import { embeddingConfigured, testEmbeddingConnection } from "./embeddings.js";
 const upload = multer({ dest: config.uploadsDir, limits: { fileSize: 30 * 1024 * 1024 } });
 export const app = express();
 app.use(express.json({ limit: "5mb" }));
+
+const localVersionPath=path.join(config.root,"version.json");
+const remoteVersionUrl="https://raw.githubusercontent.com/lianni0125-hub/MO-mochao-short-drama/main/version.json";
+const readLocalVersion=()=>JSON.parse(fs.readFileSync(localVersionPath,"utf8"));
+const compareVersions=(left,right)=>{
+  const a=String(left||"0").split(".").map(part=>Number(part)||0),b=String(right||"0").split(".").map(part=>Number(part)||0);
+  for(let index=0;index<Math.max(a.length,b.length);index++){if((a[index]||0)!==(b[index]||0))return (a[index]||0)-(b[index]||0);}
+  return 0;
+};
 
 const projectRow = id => parseProject(get("SELECT * FROM projects WHERE id=@id AND deleted_at IS NULL", { id: Number(id) }));
 const artifactsFor = id => {detachLegacyStoryStateFromControls(id);return all("SELECT * FROM artifacts WHERE project_id=@id ORDER BY id", { id: Number(id) }).map(parseArtifact);};
@@ -28,6 +37,9 @@ function requireProject(req, res, next) {
   if (!req.project) return res.status(404).json({ error: "项目不存在" });
   next();
 }
+const mockWorkflowsAllowed=()=>process.env.ALLOW_MOCK_WORKFLOWS==="1";
+function requireRealGeneration(req,res,next){return activeProvider().id!=="mock"||mockWorkflowsAllowed()?next():res.status(428).json({error:"离线界面演示只用于查看01–05流程，不能生成正式小说、剧本、质量检查或故事记忆。请配置正文生成 API。",code:"REAL_LLM_REQUIRED"})}
+function requireRealEmbedding(req,res,next){return activeEmbeddingProvider().id!=="mock"&&embeddingConfigured()||mockWorkflowsAllowed()?next():res.status(428).json({error:"离线向量测试没有语义能力，不能用于正式RAG、小说剧本或故事记忆。请配置真实 Embedding API。",code:"REAL_EMBEDDING_REQUIRED"})}
 
 function upsertArtifact(projectId, type, content, status = "draft") {
   const existing = get("SELECT * FROM artifacts WHERE project_id=@project_id AND type=@type", { project_id: projectId, type });
@@ -40,6 +52,15 @@ function upsertArtifact(projectId, type, content, status = "draft") {
 }
 
 app.get("/api/health", (_req, res) => { const p=activeProvider(); res.json({ ok:true,provider:p.id,providerLabel:p.label,model:p.model,apiKeyConfigured:Boolean(p.apiKey) }); });
+app.get("/api/version",async(_req,res)=>{
+  const current=readLocalVersion();
+  try{
+    const response=await fetch(`${remoteVersionUrl}?t=${Date.now()}`,{headers:{"User-Agent":"MO-mochao-short-drama-version-check"},signal:AbortSignal.timeout(8000)});
+    if(!response.ok)throw new Error(`GitHub ${response.status}`);
+    const latest=await response.json();
+    res.json({current,latest,updateAvailable:compareVersions(latest.version,current.version)>0,checkedAt:new Date().toISOString()});
+  }catch(error){res.json({current,latest:null,updateAvailable:false,checkError:"暂时无法连接 GitHub 检查更新",checkedAt:new Date().toISOString()});}
+});
 app.get("/api/workbench", (_req,res) => res.json(getWorkbenchState()));
 app.put("/api/workbench", (req,res) => { try { res.json(configureWorkbench(req.body||{})); } catch(error) { res.status(409).json({error:error.message}); } });
 app.get("/api/settings/llm", (_req, res) => res.json({
@@ -186,7 +207,9 @@ app.patch("/api/projects/:id", requireProject, (req, res) => {
 });
 app.put("/api/projects/:id/template",requireProject,(req,res)=>{const templateId=String(req.body.template_id||"default");if(templateId!=="default"&&!get("SELECT id FROM templates WHERE id=@id AND (project_id IS NULL OR project_id=@pid)",{id:Number(templateId),pid:req.project.id}))return res.status(404).json({error:"模板不存在"});run("UPDATE projects SET template_id=@template,updated_at=@time WHERE id=@id",{template:templateId,time:now(),id:req.project.id});res.json({template_id:templateId});});
 app.put("/api/projects/:id/emotion-intensity",requireProject,(req,res)=>{const value=req.body.emotion_intensity==="extreme"?"extreme":"strong";run("UPDATE projects SET emotion_intensity=@value,updated_at=@time WHERE id=@id",{value,time:now(),id:req.project.id});res.json({emotion_intensity:value});});
+app.put("/api/projects/:id/story-mode",requireProject,(req,res)=>{const value=req.body.story_mode==="miniprogram"?"miniprogram":"normal";run("UPDATE projects SET story_mode=@value,updated_at=@time WHERE id=@id",{value,time:now(),id:req.project.id});res.json({story_mode:value});});
 app.put("/api/projects/:id/narrative-person",requireProject,(req,res)=>{const value=req.body.narrative_person==="third"?"third":"first";run("UPDATE projects SET narrative_person=@value,updated_at=@time WHERE id=@id",{value,time:now(),id:req.project.id});res.json({narrative_person:value});});
+app.put("/api/projects/:id/idea-libraries",requireProject,(req,res)=>{const libraries=[...new Set((Array.isArray(req.body.libraries)?req.body.libraries:[]).filter(item=>["reality","market"].includes(item)))];run("UPDATE projects SET idea_libraries_json=@libraries,updated_at=@time WHERE id=@id",{libraries:JSON.stringify(libraries),time:now(),id:req.project.id});res.json({libraries});});
 app.get("/api/projects/:id/jobs", requireProject, (req,res)=>res.json(listJobs(req.project.id)));
 app.get("/api/projects/:id/jobs/history",requireProject,(req,res)=>{const jobs=all("SELECT id,type,target,status,progress,total,message,error,created_at,started_at,finished_at,elapsed_ms,attempt_started_at,auto_retry_count,auto_retry_limit FROM jobs WHERE project_id=@id ORDER BY id DESC",{id:req.project.id}),logs=all(`SELECT l.job_id,l.episode_no,l.stage,l.round_no,l.outcome,l.error_type,l.message,l.duration_ms,l.started_at,l.finished_at FROM job_step_logs l JOIN jobs j ON j.id=l.job_id WHERE j.project_id=@id ORDER BY l.id DESC`,{id:req.project.id}),byJob=new Map();for(const log of logs){if(!byJob.has(log.job_id))byJob.set(log.job_id,[]);byJob.get(log.job_id).push(log);}res.json(jobs.map(job=>{const own=byJob.get(job.id)||[],counts=new Map();for(const item of own.filter(x=>x.outcome==="failed")){const previous=counts.get(item.error_type)||{error_type:item.error_type,count:0,duration_ms:0};previous.count++;previous.duration_ms+=Number(item.duration_ms)||0;counts.set(item.error_type,previous);}return {...job,step_log_count:own.length,error_summary:[...counts.values()].sort((a,b)=>b.count-a.count),slowest_steps:[...own].sort((a,b)=>Number(b.duration_ms)-Number(a.duration_ms)).slice(0,3),recent_step_logs:own.slice(0,12)};}));});
 app.delete("/api/projects/:id/jobs/history",requireProject,(req,res)=>{const result=run("DELETE FROM jobs WHERE project_id=@id AND status IN ('completed','failed','cancelled')",{id:req.project.id});res.json({cleared:Number(result.changes||0)});});
@@ -194,6 +217,9 @@ app.post("/api/projects/:id/jobs/:jobId/retry",requireProject,(req,res)=>{try{
   const old=get("SELECT * FROM jobs WHERE id=@jobId AND project_id=@projectId",{jobId:Number(req.params.jobId),projectId:req.project.id});
   if(!old)return res.status(404).json({error:"原任务不存在或已被清空"});
   if(!["failed","cancelled"].includes(old.status))return res.status(400).json({error:"只有失败或已取消的任务可以继续/重试"});
+  const formalTypes=new Set(["full_book","episode","episode_novel","episode_arrangement","episode_script","episode_state_extract","memory_rebuild"]),vectorTypes=new Set(["full_book","episode","episode_novel","episode_script","episode_state_extract","memory_rebuild"]);
+  if(formalTypes.has(old.type)&&activeProvider().id==="mock"&&!mockWorkflowsAllowed())return res.status(428).json({error:"离线界面演示不能继续正式写作或故事记忆任务，请先配置正文生成 API。",code:"REAL_LLM_REQUIRED"});
+  if(vectorTypes.has(old.type)&&activeEmbeddingProvider().id==="mock"&&!mockWorkflowsAllowed())return res.status(428).json({error:"离线向量测试不能继续正式写作或故事记忆任务，请先配置真实 Embedding API。",code:"REAL_EMBEDDING_REQUIRED"});
   if(["full_book","episode","episode_script"].includes(old.type)||(old.type==="stage"&&old.target==="outline"))return res.status(202).json({mode:"继续",job:continueJob(req.project.id,old.id),from_job_id:old.id,same_job:true});
   let type=old.type,target=old.target,mode="重试";
   if(type==="连锁重生成必须发生"){
@@ -211,9 +237,9 @@ app.post("/api/projects/:id/jobs/:jobId/retry",requireProject,(req,res)=>{try{
 app.post("/api/projects/:id/jobs/:jobId/cancel",requireProject,(req,res)=>{try{res.json(cancelJob(req.project.id,req.params.jobId));}catch(error){res.status(404).json({error:error.message});}});
 app.post("/api/projects/:id/jobs/stage/:stage", requireProject, (req,res)=>{
   if(!["idea","planning","cards","characters","outline"].includes(req.params.stage))return res.status(400).json({error:"未知生成阶段"});
-  res.status(202).json(enqueueJob(req.project.id,"stage",req.params.stage));
+  res.status(202).json(enqueueJob(req.project.id,"stage",req.params.stage,req.params.stage==="outline"?{auto_retry_limit:100}:{}));
 });
-app.post("/api/projects/:id/jobs/outline-continue",requireProject,(req,res)=>{const startEpisode=Number(req.body?.start_episode);if(!Number.isInteger(startEpisode)||startEpisode<2||startEpisode>Number(req.project.total_episodes)||(startEpisode-1)%5!==0)return res.status(400).json({error:"续写起点必须是5集窗口后的下一集，例如 EP06、EP11、EP16"});const previous=all("SELECT episode_no,summary,hook FROM episodes WHERE project_id=@pid AND episode_no<@start ORDER BY episode_no",{pid:req.project.id,start:startEpisode});if(previous.length!==startEpisode-1||previous.some((ep,index)=>Number(ep.episode_no)!==index+1||!String(ep.summary||"").trim()||!String(ep.hook||"").trim()))return res.status(400).json({error:"续写起点之前存在缺失分集，或本集大概内容、钩子为空"});res.status(202).json(enqueueJob(req.project.id,"stage","outline",{preserve_existing:true,start_episode:startEpisode}));});
+app.post("/api/projects/:id/jobs/outline-continue",requireProject,(req,res)=>{const startEpisode=Number(req.body?.start_episode);if(!Number.isInteger(startEpisode)||startEpisode<2||startEpisode>Number(req.project.total_episodes)||(startEpisode-1)%5!==0)return res.status(400).json({error:"续写起点必须是5集窗口后的下一集，例如 EP06、EP11、EP16"});const previous=all("SELECT episode_no,summary,hook FROM episodes WHERE project_id=@pid AND episode_no<@start ORDER BY episode_no",{pid:req.project.id,start:startEpisode});if(previous.length!==startEpisode-1||previous.some((ep,index)=>Number(ep.episode_no)!==index+1||!String(ep.summary||"").trim()||!String(ep.hook||"").trim()))return res.status(400).json({error:"续写起点之前存在缺失分集，或本集大概内容、钩子为空"});res.status(202).json(enqueueJob(req.project.id,"stage","outline",{preserve_existing:true,start_episode:startEpisode,auto_retry_limit:100}));});
 app.post("/api/projects/:id/jobs/planning/:section",requireProject,(req,res)=>{
   if(!["title","framework","worldbuilding","synopsis","core_expectations"].includes(req.params.section))return res.status(400).json({error:"未知的策划字段"});
   res.status(202).json(enqueueJob(req.project.id,"planning_section",req.params.section));
@@ -222,16 +248,16 @@ app.post("/api/projects/:id/jobs/episode-boundaries/:no",requireProject,(req,res
 app.post("/api/projects/:id/jobs/episode-boundary/:no/:field",requireProject,(req,res)=>{if(!["required_plot","must_not_reveal"].includes(req.params.field))return res.status(400).json({error:"未知写作边界字段"});res.status(202).json(enqueueJob(req.project.id,"episode_boundary",`${Number(req.params.no)}:${req.params.field}`));});
 app.post("/api/projects/:id/jobs/required-plot-chain/:start",requireProject,(req,res)=>{const start=Number(req.params.start),last=get("SELECT MAX(episode_no) last FROM episodes WHERE project_id=@id",{id:req.project.id})?.last||0;if(!Number.isInteger(start)||start<1||start>last)return res.status(400).json({error:"起始集数无效"});res.status(202).json(enqueueJob(req.project.id,"连锁重生成必须发生",String(start)));});
 app.post("/api/projects/:id/jobs/must-not-reveal-all",requireProject,(req,res)=>{const count=get("SELECT COUNT(*) count FROM episodes WHERE project_id=@id",{id:req.project.id})?.count||0;if(!count)return res.status(400).json({error:"请先生成分集梗概"});res.status(202).json(enqueueJob(req.project.id,"逐集重生成不得揭示","all"));});
-const requireEmbedding=(req,res,next)=>embeddingConfigured()?next():res.status(428).json({error:"该流程需要 Embedding API，请先前往模型设置完成配置",code:"EMBEDDING_REQUIRED"});
-app.post("/api/projects/:id/jobs/episode/:no", requireProject,requireEmbedding,(req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode",String(Number(req.params.no)))));
-app.post("/api/projects/:id/jobs/episode-novel/:no", requireProject,requireEmbedding,(req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode_novel",String(Number(req.params.no)))));
-app.post("/api/projects/:id/jobs/episode-arrangement/:no", requireProject, (req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode_arrangement",String(Number(req.params.no)))));
-app.post("/api/projects/:id/jobs/episode-script/:no", requireProject,requireEmbedding,(req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode_script",String(Number(req.params.no)))));
-app.post("/api/projects/:id/jobs/episode-state/:no", requireProject,requireEmbedding,(req,res)=>{const no=Number(req.params.no),episode=get("SELECT script FROM episodes WHERE project_id=@pid AND episode_no=@no",{pid:req.project.id,no});if(!episode)return res.status(404).json({error:"该集不存在"});if(!String(episode.script||"").trim())return res.status(400).json({error:"当前集还没有可提炼的剧本文本"});res.status(202).json(enqueueJob(req.project.id,"episode_state_extract",String(no)))});
+const requireEmbedding=requireRealEmbedding;
+app.post("/api/projects/:id/jobs/episode/:no", requireProject,requireRealGeneration,requireEmbedding,(req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode",String(Number(req.params.no)))));
+app.post("/api/projects/:id/jobs/episode-novel/:no", requireProject,requireRealGeneration,requireEmbedding,(req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode_novel",String(Number(req.params.no)))));
+app.post("/api/projects/:id/jobs/episode-arrangement/:no", requireProject,requireRealGeneration, (req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode_arrangement",String(Number(req.params.no)))));
+app.post("/api/projects/:id/jobs/episode-script/:no", requireProject,requireRealGeneration,requireEmbedding,(req,res)=>res.status(202).json(enqueueJob(req.project.id,"episode_script",String(Number(req.params.no)))));
+app.post("/api/projects/:id/jobs/episode-state/:no", requireProject,requireRealGeneration,requireEmbedding,(req,res)=>{const no=Number(req.params.no),episode=get("SELECT script FROM episodes WHERE project_id=@pid AND episode_no=@no",{pid:req.project.id,no});if(!episode)return res.status(404).json({error:"该集不存在"});if(!String(episode.script||"").trim())return res.status(400).json({error:"当前集还没有可提炼的剧本文本"});res.status(202).json(enqueueJob(req.project.id,"episode_state_extract",String(no)))});
 function memoryRebuildRange(projectId){const episodes=all("SELECT episode_no,script FROM episodes WHERE project_id=@id ORDER BY episode_no",{id:projectId}),written=new Set(episodes.filter(item=>String(item.script||"").trim()).map(item=>Number(item.episode_no))),maxWritten=Math.max(0,...written);let cutoff=0;while(written.has(cutoff+1))cutoff++;const gap=maxWritten>cutoff?cutoff+1:null,ignoredWritten=gap?[...written].filter(no=>no>=gap).length:0;return {cutoff,gap,maxWritten,ignoredWritten,totalPlanned:episodes.length};}
 app.get("/api/projects/:id/memory-rebuild-preview",requireProject,requireEmbedding,(req,res)=>res.json(memoryRebuildRange(req.project.id)));
-app.post("/api/projects/:id/jobs/memory-rebuild",requireProject,requireEmbedding,(req,res)=>{const range=memoryRebuildRange(req.project.id);if(!range.cutoff)return res.status(400).json({error:range.gap?`EP01没有剧本，无法建立链式剧情记忆`:"还没有可提炼的剧本"});if(range.gap&&!req.body.confirm_gap)return res.status(409).json({error:`检测到 EP${String(range.gap).padStart(2,"0")} 剧本缺失，只能重建至 EP${String(range.cutoff).padStart(2,"0")}`,code:"MEMORY_GAP_CONFIRMATION_REQUIRED",...range});res.status(202).json(enqueueJob(req.project.id,"memory_rebuild","all",{cutoff:range.cutoff,gap:range.gap}));});
-app.post("/api/projects/:id/jobs/full-book", requireProject,requireEmbedding, (req,res)=>{
+app.post("/api/projects/:id/jobs/memory-rebuild",requireProject,requireRealGeneration,requireEmbedding,(req,res)=>{const range=memoryRebuildRange(req.project.id);if(!range.cutoff)return res.status(400).json({error:range.gap?`EP01没有剧本，无法建立链式剧情记忆`:"还没有可提炼的剧本"});if(range.gap&&!req.body.confirm_gap)return res.status(409).json({error:`检测到 EP${String(range.gap).padStart(2,"0")} 剧本缺失，只能重建至 EP${String(range.cutoff).padStart(2,"0")}`,code:"MEMORY_GAP_CONFIRMATION_REQUIRED",...range});res.status(202).json(enqueueJob(req.project.id,"memory_rebuild","all",{cutoff:range.cutoff,gap:range.gap}));});
+app.post("/api/projects/:id/jobs/full-book", requireProject,requireRealGeneration,requireEmbedding, (req,res)=>{
   const count=get("SELECT COUNT(*) count FROM episodes WHERE project_id=@id",{id:req.project.id})?.count||0;
   if(!count)return res.status(400).json({error:"请先生成完整逐集框架"});
   const startEpisode=req.body.start_episode==null?1:Number(req.body.start_episode);
@@ -245,8 +271,11 @@ app.post("/api/projects/:id/jobs/full-book", requireProject,requireEmbedding, (r
 
 app.post("/api/projects/:id/constraints", requireProject, (req, res) => {
   const b = req.body;
+  const start=b.episode_start==null||b.episode_start===""?null:Number(b.episode_start),end=b.episode_end==null||b.episode_end===""?start:Number(b.episode_end);
+  if(start!=null&&(!Number.isInteger(start)||start<1||start>Number(req.project.total_episodes)))return res.status(400).json({error:"硬约束起始集数无效"});
+  if(end!=null&&(!Number.isInteger(end)||end<start||end>Number(req.project.total_episodes)))return res.status(400).json({error:"硬约束结束集数无效"});
   const result = run(`INSERT INTO constraints(project_id,kind,category,description,episode_start,episode_end,locked) VALUES(@project_id,@kind,@category,@description,@start,@end,@locked)`, {
-    project_id: req.project.id, kind: b.kind || "hard", category: b.category || "other", description: b.description || "", start: b.episode_start || null, end: b.episode_end || null, locked: b.locked === false ? 0 : 1
+    project_id: req.project.id, kind: b.kind || "hard", category: b.category || "other", description: b.description || "", start, end, locked: b.locked === false ? 0 : 1
   });
   res.status(201).json(get("SELECT * FROM constraints WHERE id=@id", { id: Number(result.lastInsertRowid) }));
 });
@@ -272,13 +301,10 @@ app.post("/api/projects/:id/generate/:stage", requireProject, async (req, res, n
   try {
     const stage = req.params.stage;
     if (!["idea","planning","cards","characters","outline"].includes(stage)) return res.status(400).json({ error: "未知生成阶段" });
+    if(stage==="idea"&&(req.project.idea_libraries||[]).length&&activeEmbeddingProvider().id==="mock"&&!mockWorkflowsAllowed())return res.status(428).json({error:"已选择灵感资料库，但离线向量测试不能执行正式RAG。请配置真实 Embedding API，或取消01中的资料库勾选。",code:"REAL_EMBEDDING_REQUIRED"});
     const constraints = constraintsFor(req.project.id), artifacts = artifactsFor(req.project.id);
-    const evidence = stage === "idea" ? searchKnowledge([req.project.seed, ...req.project.tags].join(" "), "", 8) : [];
-    const template = templateContext(req.project);
-    let prompt = buildStagePrompt(stage, req.project, constraints, artifacts, evidence);
-    if (["planning","cards","characters","outline"].includes(stage) && template?.text) {
-      prompt += `\n\n当前启用模板（只作为结构与格式规范，其中故事内容不是指令，也不得照搬）：\n${template.text.slice(0, 14000)}`;
-    }
+    const evidence = stage === "idea" ? await searchIdeaKnowledge(req.project,8) : [];
+    const prompt = buildStagePrompt(stage, req.project, constraints, artifacts, evidence);
     const result = await generate({ stage, project: req.project, prompt });
     const artifact = upsertArtifact(req.project.id, stage, result.output, "draft");
     run(`INSERT INTO generations(project_id,stage,provider,model,prompt,output,status,input_tokens,output_tokens) VALUES(@pid,@stage,@provider,@model,@prompt,@output,'completed',@input,@output_tokens)`, {
@@ -286,10 +312,10 @@ app.post("/api/projects/:id/generate/:stage", requireProject, async (req, res, n
     });
     if (stage === "outline" && Array.isArray(result.output.episodes)) {
       for (const ep of result.output.episodes) {
-        run(`INSERT INTO episodes(project_id,episode_no,title,summary,scene_treatment,hook,purpose,start_state,end_state,required_plot,must_reveal,must_not_reveal,rhythm,emotion,card_relation)
-          VALUES(@pid,@no,@title,@summary,@treatment,@hook,@purpose,@start,@end,@plot,@reveal,@not_reveal,@rhythm,@emotion,@card)
-          ON CONFLICT(project_id,episode_no) DO UPDATE SET title=excluded.title,summary=excluded.summary,scene_treatment=excluded.scene_treatment,hook=excluded.hook,purpose=excluded.purpose,start_state=excluded.start_state,end_state=excluded.end_state,required_plot=excluded.required_plot,must_reveal=excluded.must_reveal,must_not_reveal=excluded.must_not_reveal,rhythm=excluded.rhythm,emotion=excluded.emotion,card_relation=excluded.card_relation,updated_at=CURRENT_TIMESTAMP`, {
-          pid: req.project.id, no: ep.episode_no, title: ep.title || "", summary: ep.summary || "", treatment:ep.scene_treatment || "", hook: ep.hook || "", purpose: ep.purpose || "", start: ep.start_state || "", end: ep.end_state || "", plot: ep.required_plot || "", reveal: ep.must_reveal || "", not_reveal: ep.must_not_reveal || "", rhythm: ep.rhythm || "", emotion: ep.emotion || "", card: ep.card_relation || ""
+        run(`INSERT INTO episodes(project_id,episode_no,title,summary,scene_treatment,hook,purpose,start_state,end_state,required_plot,must_reveal,must_not_reveal,rhythm,emotion,card_relation,first_appearance_characters)
+          VALUES(@pid,@no,@title,@summary,@treatment,@hook,@purpose,@start,@end,@plot,@reveal,@not_reveal,@rhythm,@emotion,@card,@appearances)
+          ON CONFLICT(project_id,episode_no) DO UPDATE SET title=excluded.title,summary=excluded.summary,scene_treatment=excluded.scene_treatment,hook=excluded.hook,purpose=excluded.purpose,start_state=excluded.start_state,end_state=excluded.end_state,required_plot=excluded.required_plot,must_reveal=excluded.must_reveal,must_not_reveal=excluded.must_not_reveal,rhythm=excluded.rhythm,emotion=excluded.emotion,card_relation=excluded.card_relation,first_appearance_characters=excluded.first_appearance_characters,updated_at=CURRENT_TIMESTAMP`, {
+          pid: req.project.id, no: ep.episode_no, title: ep.title || "", summary: ep.summary || "", treatment:ep.scene_treatment || "", hook: ep.hook || "", purpose: ep.purpose || "", start: ep.start_state || "", end: ep.end_state || "", plot: ep.required_plot || "", reveal: ep.must_reveal || "", not_reveal: ep.must_not_reveal || "", rhythm: ep.rhythm || "", emotion: ep.emotion || "", card: ep.card_relation || "", appearances:ep.first_appearance_characters||""
         });
       }
     }
@@ -312,15 +338,20 @@ app.put("/api/projects/:id/episodes", requireProject, (req, res) => {
 });
 
 app.put("/api/projects/:id/episodes/:no", requireProject, (req, res) => {
-  const allowed = ["title","summary","scene_treatment","hook","purpose","start_state","end_state","required_plot","must_reveal","must_not_reveal","rhythm","emotion","card_relation","novel","episode_plan","script","status"];
+  const allowed = ["title","summary","scene_treatment","hook","purpose","start_state","end_state","required_plot","must_reveal","must_not_reveal","rhythm","emotion","card_relation","first_appearance_characters","novel","episode_plan","script","status"];
   const current = get("SELECT * FROM episodes WHERE project_id=@pid AND episode_no=@no", { pid: req.project.id, no: Number(req.params.no) });
   if (!current) return res.status(404).json({ error: "该集不存在，请先生成逐集框架" });
+  if("first_appearance_characters" in req.body){
+    const content=characterArtifactContent(req.project.id),mainNames=(content?.characters||[]).map(item=>String(item.name||"").trim()).filter(Boolean),names=[...new Set(String(req.body.first_appearance_characters||"").split(/[；;、,，\n]+/).map(item=>item.trim()).filter(item=>item&&!/^(?:无|暂无|没有)$/.test(item)))],invalid=names.filter(name=>!mainNames.includes(name));
+    if(invalid.length)return res.status(400).json({error:`首次出场人物不在03主要人物中：${invalid.join("、")}`});
+    req.body.first_appearance_characters=names.join("；")||"无";
+  }
   const merged = { ...current, ...Object.fromEntries(allowed.filter(k => k in req.body).map(k => [k, req.body[k]])) };
   run(`UPDATE episodes SET ${allowed.map(k => `${k}=@${k}`).join(",")},updated_at=@time WHERE id=@id`, { ...Object.fromEntries(allowed.map(k => [k, merged[k] ?? ""])), time: now(), id: current.id });
   if("novel" in req.body&&String(req.body.novel??"")!==String(current.novel||""))run("UPDATE episodes SET novel_summary='' WHERE id=@id",{id:current.id});
   res.json(get("SELECT * FROM episodes WHERE id=@id", { id: current.id }));
 });
-app.post("/api/projects/:id/episodes/:no/generate", requireProject, async (req, res, next) => {
+app.post("/api/projects/:id/episodes/:no/generate", requireProject,requireRealGeneration,requireRealEmbedding, async (req, res, next) => {
   try {
     const episode=get("SELECT * FROM episodes WHERE project_id=@pid AND episode_no=@no",{pid:req.project.id,no:Number(req.params.no)});
     if(!episode)return res.status(404).json({error:"该集不存在，请先生成逐集框架"});
@@ -328,13 +359,13 @@ app.post("/api/projects/:id/episodes/:no/generate", requireProject, async (req, 
     return res.json(get("SELECT * FROM episodes WHERE id=@id",{id:episode.id}));
   } catch (error) { next(error); }
 });
-app.post("/api/projects/:id/episodes/:no/quality", requireProject, async (req, res, next) => {
+app.post("/api/projects/:id/episodes/:no/quality", requireProject,requireRealGeneration, async (req, res, next) => {
   try {
     const episode = get("SELECT * FROM episodes WHERE project_id=@pid AND episode_no=@no", { pid: req.project.id, no: Number(req.params.no) });
     const guide=templateWritingGuide(templateContext(req.project)),format=guide.format||{};
     // 创作提示与成稿验收均跟随当前模板；默认模板单独放宽到 1000—2000 字。
     format.targetCharacters=guide.scriptAcceptance;
-    const prompt = `${buildStagePrompt("quality", req.project, constraintsFor(req.project.id), artifactsFor(req.project.id))}\n\n本集已锁定的写作任务：\n${JSON.stringify(episode||{},null,2)}\n\n当前模板格式指南：\n${JSON.stringify(format,null,2)}\n\n待检查剧本：\n${episode?.script || ""}`;
+    const prompt = `${buildStagePrompt("quality", req.project, constraintsFor(req.project.id), artifactsFor(req.project.id), [], {start:Number(episode?.episode_no),end:Number(episode?.episode_no)})}\n\n本集已锁定的写作任务：\n${JSON.stringify(episode||{},null,2)}\n\n当前模板格式指南：\n${JSON.stringify(format,null,2)}\n\n待检查剧本：\n${episode?.script || ""}`;
     const script=episode?.script||"",lines=script.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
     const metrics={characters:(script.match(/[\p{L}\p{N}]/gu)||[]).length,scenes:lines.filter(x=>/^\d+\s+(内景|外景)\s+.+/.test(x)).length,parentheticals:(script.match(/（(?!V\.O\.|OS)[^）]+）|\((?!V\.O\.|OS)[^\)]+\)/gi)||[]).length,bracketNotes:(script.match(/【[^】]+】|\[[^\]]+\]/g)||[]).length,directingTerms:(script.match(/(?:镜头|特写|运镜|摄像机|画面切至|推镜头|拉镜头|演员需|时长\s*\d+)/g)||[]).length,unfilmableTerms:(script.match(/(?:内心想着|心里暗想|他意识到|她意识到|他不知道的是|她不知道的是)/g)||[]).length,clicheReactions:(script.match(/(?:瞳孔骤缩|眼睛一亮|眼中闪过|眼神一沉|眼神一凛|嘴角(?:微微)?上扬|眉头一皱|脸色(?:骤然|猛地)?一变|倒吸一口凉气|(?:攅紧|握紧)拳头)/g)||[]).length};
     const charRange=format.targetCharacters||{},sceneRange=format.targetScenes||{},formatIssues=[];if(format.episodeHeading&&!/^EP\s*0*\d+/i.test(lines[0]||""))formatIssues.push(`缺少当前模板要求的集标题：${format.episodeHeading}`);if(sceneRange.min!=null&&metrics.scenes<sceneRange.min)formatIssues.push(`低于当前模板观测到的最少 ${sceneRange.min} 场`);if(sceneRange.max!=null&&metrics.scenes>sceneRange.max)formatIssues.push(`高于当前模板观测到的最多 ${sceneRange.max} 场`);if(charRange.min!=null&&metrics.characters<charRange.min)formatIssues.push(`低于当前模板样本的篇幅下界 ${charRange.min} 字符`);if(charRange.max!=null&&metrics.characters>charRange.max)formatIssues.push(`高于当前模板样本的篇幅上界 ${charRange.max} 字符`);if(format.writingRules?.some(x=>x.includes("括号"))&&metrics.parentheticals>2)formatIssues.push("非声音来源的括号说明不符合当前模板");if(format.writingRules?.some(x=>x.includes("方括号"))&&metrics.bracketNotes>1)formatIssues.push("制作提示数量不符合当前模板");if(metrics.directingTerms)formatIssues.push("出现镜头、摄影或演员指令，这些不属于剧本成稿");if(metrics.unfilmableTerms)formatIssues.push("出现无法直接拍摄的心理或全知解释");
@@ -373,7 +404,7 @@ const pendingTemplatePath=token=>{
   const target=path.resolve(config.uploadsDir,String(token)),root=path.resolve(config.uploadsDir)+path.sep;
   return target.startsWith(root)?target:null;
 };
-const numberRange=(value,fallback)=>{const min=Math.max(1,Number(value?.min)||fallback.min),max=Math.max(min,Number(value?.max)||fallback.max),ideal=Math.min(max,Math.max(min,Number(value?.ideal??value?.average)||Math.round((min+max)/2)));return {min,ideal,max};};
+const numberRange=(value,fallback,{automaticIdeal=false}={})=>{const min=Math.max(1,Number(value?.min)||fallback.min),max=Math.max(min,Number(value?.max)||fallback.max),ideal=automaticIdeal?Math.round((min+max)/2):Math.min(max,Math.max(min,Number(value?.ideal??value?.average)||Math.round((min+max)/2)));return {min,ideal,max};};
 function reviewedTemplateAnalysis(input,base){
   const defaults=templateWritingGuide({id:"default",analysis:{inferredScriptFormat:base?.inferredScriptFormat}}).format;
   const raw=input?.inferredScriptFormat||{};
@@ -382,7 +413,7 @@ function reviewedTemplateAnalysis(input,base){
     planningSections:Array.isArray(input?.planningSections)&&input.planningSections.length?input.planningSections:base.planningSections,
     inferredScriptFormat:{
       episodeHeading:cleanText(raw.episodeHeading,defaults.episodeHeading,80),sceneHeading:cleanText(raw.sceneHeading,defaults.sceneHeading,160),dialogue:cleanText(raw.dialogue,defaults.dialogue,160),voiceOver:cleanText(raw.voiceOver,defaults.voiceOver,240),specialSpeaker:cleanText(raw.specialSpeaker,defaults.specialSpeaker,160),action:cleanText(raw.action,defaults.action,300),notes:cleanText(raw.notes,defaults.notes,300),
-      novelCharacters:numberRange(raw.novelCharacters,{min:1000,ideal:1250,max:1500}),targetCharacters:numberRange(raw.targetCharacters,{min:1500,ideal:1750,max:2000}),targetScenes:numberRange(raw.targetScenes,{min:1,ideal:2,max:3}),
+      novelCharacters:numberRange(raw.novelCharacters,{min:1000,ideal:1250,max:1500},{automaticIdeal:true}),targetCharacters:numberRange(raw.targetCharacters,{min:1500,ideal:1750,max:2000},{automaticIdeal:true}),novelAcceptance:numberRange(raw.novelAcceptance||raw.novelCharacters,{min:1000,ideal:1250,max:1500}),scriptAcceptance:numberRange(raw.scriptAcceptance||raw.targetCharacters,{min:1500,ideal:1750,max:2000}),targetScenes:numberRange(raw.targetScenes,{min:1,ideal:2,max:3}),
       writingRules:(Array.isArray(raw.writingRules)?raw.writingRules:String(raw.writingRules||"").split(/\r?\n/)).map(x=>String(x).trim()).filter(Boolean).slice(0,40).map(x=>x.slice(0,500)),normalization:Array.isArray(base?.inferredScriptFormat?.normalization)?base.inferredScriptFormat.normalization:[],sampleExcerpt:cleanText(raw.sampleExcerpt,"",12000)
     },sourceAnalysis:base.sourceAnalysis,detected:base.detected,episodeStats:base.episodeStats,lineCount:base.lineCount,characterCount:base.characterCount
   };
@@ -401,11 +432,13 @@ app.post("/api/templates/analyze", upload.single("file"), async (req, res, next)
 app.post("/api/templates", async (req, res, next) => {
   try {
     const finalPath=pendingTemplatePath(req.body.token);
-    if(!finalPath||!fs.existsSync(finalPath))return res.status(400).json({error:"待确认的模板文件已失效，请重新上传"});
-    const {text,analysis:base}=await analyzeDocx(finalPath),analysis=reviewedTemplateAnalysis(req.body.analysis||{},base);
+    const fromDefault=req.body.source_mode==="default";
+    if(!fromDefault&&(!finalPath||!fs.existsSync(finalPath)))return res.status(400).json({error:"待确认的模板文件已失效，请重新上传"});
+    const analyzed=fromDefault?{text:"",analysis:templateContext({template_id:"default"}).analysis}:await analyzeDocx(finalPath);
+    const {text,analysis:base}=analyzed,analysis=reviewedTemplateAnalysis(req.body.analysis||{},base);
     const result = run("INSERT INTO templates(project_id,name,original_name,file_path,kind,extracted_text,analysis_json) VALUES(@pid,@name,@original,@path,@kind,@text,@analysis)", {
-      pid: req.body.project_id ? Number(req.body.project_id) : null, name: String(req.body.name||req.body.original_name||"导入模板").trim().slice(0,120), original: String(req.body.original_name||"导入模板.docx").slice(0,260), path: finalPath,
-      kind: analysis.detected.hasPlanningTemplate && analysis.detected.hasScriptSample ? "mixed" : analysis.detected.hasScriptSample ? "script" : "planning", text, analysis: JSON.stringify(analysis)
+      pid: null, name: String(req.body.name||req.body.original_name||"格式模板").trim().slice(0,120), original: String(req.body.original_name||(fromDefault?"基于默认模板":"导入模板.docx")).slice(0,260), path: fromDefault?"":finalPath,
+      kind: fromDefault?"format":analysis.detected?.hasScriptSample?"script-format":"format", text, analysis: JSON.stringify(analysis)
     });
     res.status(201).json({ id: Number(result.lastInsertRowid), name:req.body.name, analysis });
   } catch (error) { next(error); }
@@ -460,15 +493,31 @@ app.post("/api/projects/:id/characters/:index/image-prompt/regenerate",requirePr
 app.post("/api/projects/:id/characters/:index/image/upload",requireProject,upload.single("file"),(req,res)=>{const index=Number(req.params.index),character=characterAt(req.project.id,index);if(!character){if(req.file)fs.unlinkSync(req.file.path);return res.status(404).json({error:"请先生成人物人设"});}if(!req.file?.mimetype?.startsWith("image/")){if(req.file)fs.unlinkSync(req.file.path);return res.status(400).json({error:"请选择图片文件"});}const ext=path.extname(req.file.originalname)||".jpg",target=`${req.file.path}${ext}`;fs.renameSync(req.file.path,target);const saved=saveCharacterImage(req.project.id,index,character.name||`人物${index+1}`,target,"upload","");res.json({...saved,url:`/character-images/${saved.id}`});});
 app.get("/character-images/:imageId",(req,res)=>{const row=get("SELECT file_path FROM character_images WHERE id=@id",{id:Number(req.params.imageId)});if(!row||!fs.existsSync(row.file_path))return res.status(404).end();res.sendFile(path.resolve(row.file_path));});
 
-app.get("/api/knowledge", (req, res) => res.json(searchKnowledge(req.query.q || "", req.query.library || "", req.query.limit || 30)));
-app.post("/api/knowledge", (req, res) => {
+app.get("/api/knowledge", (req, res) => res.json(searchKnowledge(req.query.q || "", req.query.library || "", req.query.limit || 30, req.query.item_type || "")));
+app.get("/api/knowledge/status",(_req,res)=>{const time=now(),counts=all(`SELECT library,item_type,COUNT(*) count FROM knowledge_items WHERE (expires_at IS NULL OR expires_at>@time) GROUP BY library,item_type`,{time}),sources=all("SELECT name,kind,library,enabled,last_run_at,last_status,update_interval_minutes FROM sources WHERE kind <> 'weibo_hot' ORDER BY id"),pendingAutomatic=Number(get(`SELECT COUNT(*) count FROM knowledge_items WHERE auto_generated=1 AND item_type='source' AND length(summary)>=30 AND (narrative_json IS NULL OR narrative_json='{}') AND (expires_at IS NULL OR expires_at>@time)`,{time})?.count||0),pendingManual=Number(get(`SELECT COUNT(*) count FROM knowledge_items k WHERE k.auto_generated=0 AND k.item_type='source' AND length(CASE WHEN length(k.content)>0 THEN k.content ELSE k.summary END)>=30 AND NOT EXISTS (SELECT 1 FROM knowledge_items d WHERE d.source_url=('manual-card://' || k.id))`)?.count||0),pendingEmbedding=Number(get(`SELECT COUNT(*) count FROM knowledge_items WHERE item_type IN ('reality_trend','work_card','reality_card','trend_card') AND (embedding_json IS NULL OR embedding_json='[]') AND (expires_at IS NULL OR expires_at>@time)`,{time})?.count||0);res.json({retentionDays:30,counts,sources,backlog:{pendingExtraction:pendingAutomatic+pendingManual,pendingEmbedding,embeddingConfigured:embeddingConfigured()}});});
+app.post("/api/knowledge", async (req, res) => {
   const b = req.body, snapshot = b.snapshot_date || new Date().toISOString().slice(0, 10);
+  const manualUrl = b.source_url || `manual://${crypto.randomUUID()}`;
   const result = run(`INSERT INTO knowledge_items(library,title,summary,content,tags_json,platform,rank_value,published_at,snapshot_date,source_url,narrative_json)
-    VALUES(@library,@title,@summary,@content,@tags,@platform,@rank,@published,@snapshot,@url,@narrative)`, { library: b.library || "reality", title: b.title || "未命名", summary: b.summary || "", content: b.content || "", tags: JSON.stringify(b.tags || []), platform: b.platform || "", rank: b.rank_value || null, published: b.published_at || null, snapshot, url: b.source_url || "", narrative: JSON.stringify(b.narrative || {}) });
-  res.status(201).json(get("SELECT * FROM knowledge_items WHERE id=@id", { id: Number(result.lastInsertRowid) }));
+    VALUES(@library,@title,@summary,@content,@tags,@platform,@rank,@published,@snapshot,@url,@narrative)`, { library: b.library || "reality", title: b.title || "未命名", summary: b.summary || "", content: b.content || b.summary || "", tags: JSON.stringify(b.tags || []), platform: b.platform || "", rank: b.rank_value || null, published: b.published_at || null, snapshot, url: manualUrl, narrative: JSON.stringify(b.narrative || {}) });
+  const sourceId = Number(result.lastInsertRowid);
+  try {
+    const derived = await enrichManualKnowledge(sourceId);
+    res.status(201).json({ item: get("SELECT * FROM knowledge_items WHERE id=@id", { id: sourceId }), derived });
+  } catch (error) {
+    res.status(201).json({ item: get("SELECT * FROM knowledge_items WHERE id=@id", { id: sourceId }), derived: null, warning: `原文已保存，但自动提炼暂未完成：${error.message}` });
+  }
 });
 app.get("/api/sources", (_req, res) => res.json(all("SELECT * FROM sources ORDER BY id DESC")));
-app.post("/api/sources", (req, res) => { const b=req.body; const result=run("INSERT INTO sources(name,kind,library,url,update_interval_minutes) VALUES(@name,@kind,@library,@url,@interval)", { name:b.name||"未命名来源", kind:b.kind||"rss", library:b.library||"reality", url:b.url||"", interval:Number(b.update_interval_minutes||1440) }); res.status(201).json(get("SELECT * FROM sources WHERE id=@id", { id:Number(result.lastInsertRowid) })); });
+app.post("/api/sources", async (req, res) => {
+  const b=req.body,kind=b.kind||"rss";
+  if(kind!=="rss")return res.status(400).json({error:"当前仅支持手动添加RSS/Atom订阅来源"});
+  if(get("SELECT id FROM sources WHERE kind='rss' AND url=@url",{url:String(b.url||"").trim()}))return res.status(409).json({error:"该RSS地址已经添加过"});
+  let validation;try{validation=await validateRssSource(b.url)}catch(error){return res.status(400).json({error:error.message})}
+  const result=run("INSERT INTO sources(name,kind,library,url,update_interval_minutes) VALUES(@name,@kind,@library,@url,@interval)", { name:b.name||validation.title||"未命名来源", kind, library:b.library||"reality", url:validation.url, interval:Number(b.update_interval_minutes||1440) });
+  const source=get("SELECT * FROM sources WHERE id=@id", { id:Number(result.lastInsertRowid) });
+  try{const firstUpdate=await updateSource(source);let processing=null,warning="";try{processing=await processKnowledgeBacklog()}catch(error){warning=`首次抓取成功，后续提炼暂未完成：${error.message}`}return res.status(201).json({source,validation,firstUpdate,processing,warning})}catch(error){run("UPDATE sources SET last_run_at=@time,last_status=@status WHERE id=@id",{time:now(),status:`error:${error.message}`,id:source.id});return res.status(201).json({source,validation,firstUpdate:null,warning:`RSS验证成功并已保存，但首次抓取遇到临时错误：${error.message}`})}
+});
 app.post("/api/sources/update", async (_req, res) => res.json(await updateAllSources()));
 app.post("/api/sources/:sourceId/update", async (req, res) => { const source=get("SELECT * FROM sources WHERE id=@id", {id:Number(req.params.sourceId)}); if(!source) return res.status(404).json({error:"来源不存在"}); res.json(await updateSource(source)); });
 
@@ -476,7 +525,7 @@ app.post("/api/projects/:id/export", requireProject, async (req, res, next) => {
   const type=["outline","novel","script"].includes(req.body?.type)?req.body.type:"script",requested=Array.isArray(req.body?.episode_numbers)?[...new Set(req.body.episode_numbers.map(Number).filter(Number.isInteger))]:null;
   let episodes=all("SELECT * FROM episodes WHERE project_id=@id ORDER BY episode_no",{id:req.project.id});if(requested)episodes=episodes.filter(ep=>requested.includes(ep.episode_no));
   const label=type==="outline"?"梗概":type==="novel"?"小说":"剧本";episodes=episodes.filter(ep=>String(type==="outline"?[ep.title,ep.summary,ep.hook,ep.required_plot].join(""):type==="novel"?ep.novel:ep.script).trim());if(!episodes.length)return res.status(400).json({error:`所选集数中没有可导出的${label}内容`});
-  const output=await exportProjectDocx(req.project,artifactsFor(req.project.id),episodes,all("SELECT * FROM character_images WHERE project_id=@id",{id:req.project.id}),{type});res.json({filename:output.filename,url:`/exports/${encodeURIComponent(output.filename)}`,episodes:episodes.map(x=>x.episode_no),type});
+  const output=await exportProjectDocx(req.project,artifactsFor(req.project.id),episodes,all("SELECT * FROM character_images WHERE project_id=@id",{id:req.project.id}),{type,novelBracketsToQuotes:type==="novel"&&req.body?.novel_brackets_to_quotes===true});res.json({filename:output.filename,url:`/exports/${encodeURIComponent(output.filename)}`,episodes:episodes.map(x=>x.episode_no),type});
 } catch(error){next(error);} });
 app.use("/exports", express.static(config.exportsDir));
 app.use(express.static(config.publicDir));

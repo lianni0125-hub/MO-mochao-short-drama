@@ -109,10 +109,11 @@ function screenplayChildren(project,artifacts,episodes,characterImages){
   return children;
 }
 
-function novelChildren(project,artifacts,episodes){
-  const synopsis=planningValue(artifacts,"synopsis"),children=[new Paragraph({alignment:AlignmentType.CENTER,spacing:{before:360,after:360},children:[new TextRun({text:project.title,bold:true,size:40,font:"宋体"})]})];
-  if(synopsis){children.push(heading("作品简介",HeadingLevel.HEADING_1),...bodyParagraphs(synopsis),new Paragraph({children:[new PageBreak()]}));}
-  children.push(heading("正文",HeadingLevel.HEADING_1));episodes.forEach((ep,index)=>{children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{before:index?300:120,after:180},children:[new TextRun({text:String(ep.episode_no),bold:true,size:28})]}));children.push(...bodyParagraphs(ep.novel));});return children;
+function replaceNovelCornerQuotes(value){return String(value??"").replace(/「/g,"“").replace(/」/g,"”")}
+function novelChildren(project,artifacts,episodes,options={}){
+  const format=options.replaceCornerQuotes===true?replaceNovelCornerQuotes:value=>String(value??""),synopsis=planningValue(artifacts,"synopsis"),children=[new Paragraph({alignment:AlignmentType.CENTER,spacing:{before:360,after:360},children:[new TextRun({text:project.title,bold:true,size:40,font:"宋体"})]})];
+  if(synopsis){children.push(heading("作品简介",HeadingLevel.HEADING_1),...bodyParagraphs(format(synopsis)),new Paragraph({children:[new PageBreak()]}));}
+  children.push(heading("正文",HeadingLevel.HEADING_1));episodes.forEach((ep,index)=>{children.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{before:index?300:120,after:180},children:[new TextRun({text:String(ep.episode_no),bold:true,size:28})]}));children.push(...bodyParagraphs(format(ep.novel)));});return children;
 }
 
 const outlineLabel=text=>new Paragraph({spacing:{before:180,after:80},children:[new TextRun({text,bold:true,size:25,font:"黑体",color:"245BDB"})]});
@@ -131,7 +132,7 @@ function outlineChildren(project,_artifacts,episodes){
 }
 
 export async function exportProjectDocx(project, artifacts, episodes, characterImages=[],options={}) {
-  const type=["outline","novel","script"].includes(options.type)?options.type:"script",children=type==="outline"?outlineChildren(project,artifacts,episodes):type==="novel"?novelChildren(project,artifacts,episodes):screenplayChildren(project,artifacts,episodes,characterImages);
+  const type=["outline","novel","script"].includes(options.type)?options.type:"script",children=type==="outline"?outlineChildren(project,artifacts,episodes):type==="novel"?novelChildren(project,artifacts,episodes,{replaceCornerQuotes:options.novelBracketsToQuotes===true}):screenplayChildren(project,artifacts,episodes,characterImages);
   const defaultRun=type==="script"?{font:{ascii:"Arial",hAnsi:"Arial",eastAsia:"等线"},size:22}:{font:"宋体",size:24};const defaultParagraph=type==="script"?{alignment:AlignmentType.LEFT,spacing:{before:120,after:120,line:288}}:{spacing:{line:300}};
   const doc = new Document({styles:{default:{document:{run:defaultRun,paragraph:defaultParagraph}},paragraphStyles:[{id:"Title",name:"Title",basedOn:"Normal",next:"Normal",quickFormat:true,run:{font:"宋体",size:40,bold:true},paragraph:{alignment:AlignmentType.CENTER,spacing:{after:360}}},{id:"Heading1",name:"Heading 1",basedOn:"Normal",next:"Normal",quickFormat:true,run:{font:"黑体",size:30,bold:true},paragraph:{spacing:{before:260,after:140}}},{id:"Heading2",name:"Heading 2",basedOn:"Normal",next:"Normal",quickFormat:true,run:{font:"黑体",size:27,bold:true},paragraph:{spacing:{before:220,after:120}}}]},sections: [{ properties: {page:{size:{width:11905,height:16840}}}, children }] });
   const buffer = await Packer.toBuffer(doc);

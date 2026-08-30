@@ -1,12 +1,13 @@
 {
   "name": "ai-short-drama-writer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "本地优先的 AI 短剧自动编剧工作台",
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
+    "start:autodl": "node scripts/start-autodl.js",
     "test": "node --test --test-concurrency=1",
     "update:sources": "node src/jobs/update-sources.js"
   },

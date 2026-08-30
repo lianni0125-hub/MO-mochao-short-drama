@@ -214,7 +214,7 @@ function splitScriptScenes(script){
   for(let index=0;index<lines.length;index++){
     const line=lines[index].trim();if(!line)continue;
     if(/^EP\s*0*\d+\b/i.test(line))continue;
-    const heading=/^\d+\s+(?:内景?|外景?)\s+.+/.test(line);
+    const heading=/^\d+\s+(?:内\/外|外\/内|内景?|外景?)\s+.+/.test(line);
     if(heading){if(current)scenes.push(current);current={sceneNo:scenes.length+1,startLine:index+1,endLine:index+1,lines:[line]};}
     else{if(!current)current={sceneNo:1,startLine:index+1,endLine:index+1,lines:[]};current.lines.push(line);current.endLine=index+1;}
   }
@@ -545,6 +545,33 @@ ${JSON.stringify(candidates.map(item=>({id:item.id,episode_no:item.episode_no,ev
 }
 
 function keywords(value){return [...new Set((text(value).match(/[A-Za-z0-9]+|[一-鿿]{2,8}/g)||[]).filter(x=>x.length>=2))];}
+
+function screenplayTimePoint(rows){
+  const periods=[
+    [/(?:凌晨)/,0,"凌晨"],[/(?:清晨|早晨|早上|天亮|日出)/,1,"清晨"],[/(?:上午)/,2,"上午"],
+    [/(?:中午|正午)/,3,"中午"],[/(?:下午)/,4,"下午"],[/(?:傍晚|黄昏)/,5,"傍晚"],
+    [/(?:夜晚|晚上|(?<!深)夜)/,6,"夜晚"],[/(?:深夜)/,7,"深夜"],[/(?:白天|(?:^|\s)日$)/,3,"白天"]
+  ];
+  let day=1,lastRank=null,lastLabel="时段待定",found=false;
+  for(const row of rows){
+    for(const rawLine of text(row.script).split(/\r?\n/)){
+      const line=rawLine.trim();
+      const heading=/^\d+\s+(?:内\/外|外\/内|内景?|外景?)\s+(.+)$/.exec(line)?.[1]
+        ||/^【(?:内|外)\s+(.+)】$/.exec(line)?.[1];
+      if(!heading||/(?:回忆|闪回|倒叙|梦境|幻想|未来画面|闪前)/.test(heading))continue;
+      const explicitDays=[...heading.matchAll(/(\d+)\s*天后/g)];
+      if(explicitDays.length)day+=Math.max(...explicitDays.map(item=>Number(item[1])||0));
+      else if(/(?:次日|翌日|第二天)/.test(heading))day+=1;
+      const matches=periods.filter(([pattern])=>pattern.test(heading));
+      if(!matches.length)continue;
+      const [,rank,label]=matches.at(-1);
+      if(!explicitDays.length&&!/(?:次日|翌日|第二天)/.test(heading)&&lastRank!==null&&lastRank>=4&&rank<=2)day+=1;
+      lastRank=rank;lastLabel=label;found=true;
+    }
+  }
+  return {day,period:lastLabel,found};
+}
+
 export async function compileMemoryContext(projectId,episode,signal){
   const query=[episode.summary,episode.required_plot,episode.must_not_reveal].join(" "),keys=keywords(query);
   const entities=all("SELECT kind,canonical_name,aliases_json,initial_identity,personality,backstory FROM memory_entities WHERE project_id=@pid AND active=1",{pid:projectId});
@@ -613,7 +640,8 @@ export async function compileMemoryContext(projectId,episode,signal){
   const previousTemporal=temporalRelations.filter(item=>Number(item.episode_no)===Number(episode.episode_no)-1),seedTemporal=temporalRelations.filter(item=>ids.has(Number(item.event_id))||ids.has(Number(item.anchor_event_id))),temporalNeighborIds=new Set(seedTemporal.flatMap(item=>[Number(item.event_id),Number(item.anchor_event_id)]).filter(Boolean)),selectedTemporal=temporalRelations.filter(item=>temporalNeighborIds.has(Number(item.event_id))||temporalNeighborIds.has(Number(item.anchor_event_id))).filter(item=>Number(item.episode_no)!==Number(episode.episode_no)-1&&item.timeline_type!=="flashback"&&item.timeline_type!=="flashforward").sort((a,b)=>b.episode_no-a.episode_no||b.event_id-a.event_id).slice(0,10),commitmentTemporal=temporalRelations.filter(item=>![...previousTemporal,...selectedTemporal].some(saved=>saved.id===item.id)&&["after","within","at"].includes(item.relation)&&commitmentPattern.test([item.event_subject,item.event_action,item.event_object,item.event_result,item.event_quote].map(text).join(""))&&!settledCommitments.has(Number(item.event_id))&&!["flashback","flashforward"].includes(item.timeline_type)).sort((a,b)=>b.episode_no-a.episode_no||b.event_id-a.event_id).slice(0,4);
   const chosenTemporal=[...new Map([...previousTemporal,...selectedTemporal,...commitmentTemporal].map(item=>[item.id,item])).values()].sort((a,b)=>a.episode_no-b.episode_no||a.event_id-b.event_id||a.marker_order-b.marker_order),formatTemporal=item=>item.relation_role==="deadline"?`EP${String(item.episode_no).padStart(2,"0")}｜期限边：${item.event_summary} ──${item.marker_text}内/至──→ ${item.target_label||"未来期限点"}｜${precisionLabel[item.precision]||item.precision}时间`:`EP${String(item.episode_no).padStart(2,"0")}｜时间边：${item.anchor_summary||item.anchor_label||"未确定锚点"} ──${item.marker_text}·${relationLabel[item.relation]||item.relation}──→ ${item.event_summary}｜${precisionLabel[item.precision]||item.precision}时间`;
   const temporalGraph=[previousTemporal.length?`【上一集时间｜固定保底】\n${previousTemporal.map(formatTemporal).join("\n")}`:"",selectedTemporal.length?`【随向量命中事件召回】\n${selectedTemporal.map(formatTemporal).join("\n")}`:"",commitmentTemporal.length?`【仍可能约束后续的时间承诺】\n${commitmentTemporal.map(formatTemporal).join("\n")}`:""].filter(Boolean).join("\n");
-  const timeAxis=currentAnchor?`当前叙事落点：EP${String(currentAnchor.episode_no).padStart(2,"0")}末端，${currentAnchor.summary}。生成新剧情时从这一落点继续，不得把期限、预告或回忆误当成已经发生。\n【筛选后的相对时间图】\n${temporalGraph||"暂无与本集相关的明确时间关系"}\n时间边表示两个事件或事件与期限点之间的相对关系，可以双向理解；不得把原文时间标签误当成精确公历。时间关系只随上一集、语义命中事件或仍有效的明确时间承诺进入上下文；已兑现、替代或阻断的旧承诺不再固定发送。倒叙和未来预示仅在对应历史事件被语义召回时作为背景使用，不得覆盖当前人物关系、道具归属、位置、数值和能力状态。`:`当前叙事落点尚未建立；只能依据本集规划推进，不得自行换算相对日期。`;
+  const priorScripts=all("SELECT episode_no,script FROM episodes WHERE project_id=@pid AND episode_no<@episode AND script IS NOT NULL AND TRIM(script)<>'' ORDER BY episode_no",{pid:projectId,episode:episode.episode_no}),previousTime=screenplayTimePoint(priorScripts),dayAnchor=priorScripts.length?`上一集主线时间落点：第${previousTime.day}天·${previousTime.period}。这是已完成剧本推算出的粗粒度日序；本集可按本集事件自然推进，不得把它当成必须停留的时段。`:`故事时间起点：主线第1天；开篇时段由本集内容自然确定。`;
+  const timeAxis=currentAnchor?`当前叙事落点：EP${String(currentAnchor.episode_no).padStart(2,"0")}末端，${currentAnchor.summary}。生成新剧情时从这一落点继续，不得把期限、预告或回忆误当成已经发生。\n${dayAnchor}\n【筛选后的相对时间图】\n${temporalGraph||"暂无与本集相关的明确时间关系"}\n时间边表示两个事件或事件与期限点之间的相对关系，可以双向理解；不得把原文时间标签误当成精确公历。时间关系只随上一集、语义命中事件或仍有效的明确时间承诺进入上下文；已兑现、替代或阻断的旧承诺不再固定发送。倒叙和未来预示仅在对应历史事件被语义召回时作为背景使用，不得覆盖当前人物关系、道具归属、位置、数值和能力状态。`:`当前叙事落点尚未建立。${dayAnchor}只能依据本集规划推进，不得自行换算公历日期。`;
   const previousEvents=previous.map(formatEvent).join("\n"),previousLastEvent=previous.length?formatEvent(previous.at(-1)):"";
   return {profiles,events,chains,relationships:relationshipText,secondaryCharacters:secondaryText,goldenFinger:goldenText,importantProps:propText,resources:resourceText,timeAxis,previousEvents,previousLastEvent,entityCount:relevantEntities.length,eventCount:selected.length,recentCount:previous.length,recalledCount:recalled.length,temporalCount:chosenTemporal.length,embeddingUsed:embeddingConfigured()};
 }

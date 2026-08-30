@@ -12,6 +12,7 @@ export const config = {
   exportsDir: path.join(dataDir, "exports"),
   publicDir: path.join(root, "public"),
   port: Number(process.env.PORT || 3210),
+  host: process.env.HOST || "127.0.0.1",
   llmProvider: process.env.LLM_PROVIDER || (process.env.OPENAI_API_KEY ? "openai" : "mock"),
   openaiModel: process.env.OPENAI_MODEL || "gpt-5.4-mini",
   baseUrl: process.env.LLM_BASE_URL || "",
@@ -47,7 +48,7 @@ export const providerDefaults = {
   qwen: { label:"通义千问（阿里云百炼）", baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1", model:"qwen3.8-max", protocol:"chat_completions" },
   moonshot: { label:"Kimi / 月之暗面", baseUrl:"https://api.moonshot.cn/v1", model:"kimi-k2.6", protocol:"chat_completions" },
   custom: { label:"其他 OpenAI-compatible API", baseUrl:"", model:"", protocol:"chat_completions" },
-  mock: { label:"离线演示模式", baseUrl:"", model:"local-demo", protocol:"mock" }
+  mock: { label:"离线界面演示", baseUrl:"", model:"local-demo", protocol:"mock" }
 };
 
 export const embeddingProviderDefaults = {
@@ -57,7 +58,7 @@ export const embeddingProviderDefaults = {
   zhipu: {label:"智谱 Embedding",baseUrl:"https://open.bigmodel.cn/api/paas/v4",model:"embedding-3"},
   qwen: {label:"通义千问 Embedding",baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1",model:"text-embedding-v4"},
   custom: {label:"其他 OpenAI-compatible Embedding",baseUrl:"",model:""},
-  mock: {label:"离线测试",baseUrl:"",model:"local-embedding"}
+  mock: {label:"离线向量测试",baseUrl:"",model:"local-embedding"}
 };
 
 export function activeProvider() {

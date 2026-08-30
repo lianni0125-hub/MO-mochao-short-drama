@@ -1,49 +1,164 @@
 import Parser from "rss-parser";
 import { all, get, run, now } from "./db.js";
+import { generate } from "./llm.js";
+import { cosineSimilarity, embedTexts, embeddingConfigured } from "./embeddings.js";
 
-export function searchKnowledge(query = "", library = "", limit = 20) {
+const DAY=86400000,RETENTION_DAYS=30,clean=value=>String(value||"").replace(/<[^>]+>/g," ").replace(/&nbsp;|&#160;/gi," ").replace(/&amp;/gi,"&").replace(/&quot;|&#34;/gi,'"').replace(/&#39;|&apos;/gi,"'").replace(/\s+/g," ").trim();
+const isoDate=value=>{const date=value?new Date(value):new Date();return Number.isNaN(date.getTime())?new Date().toISOString().slice(0,10):date.toISOString().slice(0,10)};
+const expiresAt=value=>new Date(new Date(value||Date.now()).getTime()+(RETENTION_DAYS+1)*DAY).toISOString();
+const autoSources=[
+  {name:"微博热搜历史快照",kind:"weibo_archive",library:"reality",url:"https://uapis.cn/api/v1/misc/hotboard?type=weibo",minutes:120},
+  {name:"百度实时热搜",kind:"baidu_hot",library:"reality",url:"https://top.baidu.com/board?tab=realtime",minutes:120},
+  {name:"番茄小说官方榜单",kind:"fanqie_rank",library:"market",url:"https://fanqienovel.com/rank/-2",minutes:1440},
+  {name:"红果短剧官方榜单",kind:"hongguo_pending",library:"market",url:"",minutes:1440}
+];
+const cardSchema={type:"object",properties:{cards:{type:"array",items:{type:"object",properties:{id:{type:"integer"},one_sentence_premise:{type:"string"},protagonist_identity:{type:"string"},opening_situation:{type:"string"},inciting_incident:{type:"string"},core_goal:{type:"string"},core_mechanism:{type:"string"},main_obstacles:{type:"array",items:{type:"string"}},relationship_hook:{type:"string"},development_engine:{type:"string"},reversal:{type:"string"},core_expectation:{type:"string"},payoff_types:{type:"array",items:{type:"string"}},visual_hooks:{type:"array",items:{type:"string"}},audience:{type:"string"},adaptation_value:{type:"string"}},required:["id","one_sentence_premise","protagonist_identity","opening_situation","inciting_incident","core_goal","core_mechanism","main_obstacles","relationship_hook","development_engine","reversal","core_expectation","payoff_types","visual_hooks","audience","adaptation_value"],additionalProperties:false}}},required:["cards"],additionalProperties:false};
+cardSchema.properties.cards.items.properties.source_title={type:"string"};cardSchema.properties.cards.items.required.push("source_title");
+const trendSchema={type:"object",properties:{trends:{type:"array",items:{type:"object",properties:{title:{type:"string"},audience:{type:"string"},direction:{type:"string"},mechanism:{type:"string"},common_setup:{type:"string"},payoff:{type:"string"},saturation:{type:"string"},evidence_ids:{type:"array",items:{type:"integer"}},summary:{type:"string"}},required:["title","audience","direction","mechanism","common_setup","payoff","saturation","evidence_ids","summary"],additionalProperties:false},maxItems:8}},required:["trends"],additionalProperties:false};
+const realityTrendSchema={type:"object",properties:{trends:{type:"array",items:{type:"object",properties:{title:{type:"string"},time_range:{type:"string"},signal_count:{type:"integer"},heat_pattern:{type:"string"},conflict:{type:"string"},relationship_structure:{type:"string"},public_emotion:{type:"string"},transferable_mechanism:{type:"string"},suitable_genres:{type:"array",items:{type:"string"}},evidence_ids:{type:"array",items:{type:"integer"}},confidence_note:{type:"string"},summary:{type:"string"}},required:["title","time_range","signal_count","heat_pattern","conflict","relationship_structure","public_emotion","transferable_mechanism","suitable_genres","evidence_ids","confidence_note","summary"],additionalProperties:false},maxItems:6}},required:["trends"],additionalProperties:false};
+
+export function seedAutomaticSources(){run("UPDATE sources SET enabled=0,last_status='已由可补抓近30天的历史快照源替代' WHERE kind='weibo_hot'");for(const source of autoSources){if(get("SELECT id FROM sources WHERE name=@name",{name:source.name}))continue;run("INSERT INTO sources(name,kind,library,url,enabled,update_interval_minutes,last_status) VALUES(@name,@kind,@library,@url,@enabled,@minutes,@status)",{...source,enabled:source.kind==="hongguo_pending"?0:1,status:source.kind==="hongguo_pending"?"等待官方或授权数据接口":"等待首次自动更新"});}sanitizeStoredPlatformTrends()}
+
+export function searchKnowledge(query = "", library = "", limit = 20, itemType = "") {
   const terms = query.trim().split(/\s+/).filter(Boolean);
-  let sql = "SELECT k.*, s.name source_name FROM knowledge_items k LEFT JOIN sources s ON s.id=k.source_id WHERE 1=1";
-  const params = {};
+  const params = { time: now() };
+  let sql = "SELECT k.*, s.name source_name FROM knowledge_items k LEFT JOIN sources s ON s.id=k.source_id WHERE k.item_type<>'quarantined' AND (k.expires_at IS NULL OR k.expires_at>@time)";
   if (library) { sql += " AND k.library=@library"; params.library = library; }
+  const allowedTypes = new Set(["source", "reality_signal", "reality_trend", "reality_card", "work_card", "trend_card"]);
+  if (allowedTypes.has(itemType)) { sql += " AND k.item_type=@itemType"; params.itemType = itemType; }
   if (terms.length) {
     sql += " AND (" + terms.map((_, i) => `(k.title LIKE @q${i} OR k.summary LIKE @q${i} OR k.content LIKE @q${i} OR k.tags_json LIKE @q${i})`).join(" AND ") + ")";
     terms.forEach((t, i) => { params[`q${i}`] = `%${t}%`; });
   }
   sql += " ORDER BY COALESCE(k.published_at,k.snapshot_date) DESC LIMIT @limit";
   params.limit = Number(limit);
-  return all(sql, params).map(x => ({ ...x, tags: JSON.parse(x.tags_json || "[]"), narrative: JSON.parse(x.narrative_json || "{}") }));
+  return all(sql, params).map(parseKnowledgeItem);
 }
+
+export async function enrichManualKnowledge(sourceId) {
+  const source = get("SELECT * FROM knowledge_items WHERE id=@id", { id: Number(sourceId) });
+  if (!source) throw new Error("手动资料不存在");
+  const material = clean(source.content || source.summary);
+  if (!material) throw new Error("请填写摘要或正文后再提炼");
+  const focus = source.library === "market"
+    ? "按平台作品分析：提炼开局处境、核心机制、故事发动机、关系钩子、核心期待、爽点类型和可视化噱头。"
+    : "按现实素材分析：只提炼原文明示的现实冲突、人物关系、损失、困境与可迁移的短剧机制，不扩写未经证实的事实。";
+  const prompt = `你是短剧灵感资料分析员。请把用户手动保存的原始资料提炼为一张可检索梗卡。原文必须保留在数据库中，梗卡只做结构化派生。\n${focus}\nsource_title必须逐字复制标题；无法判断的字段返回空字符串或空数组；禁止补写原文没有的信息。\n\n资料：\n${JSON.stringify({ id: source.id, library: source.library, platform: source.platform, title: source.title, text: material })}`;
+  const result = await generate({ stage: "knowledge_manual_card", project: { id: 0, title: "手动灵感资料", tags: [] }, prompt, schema: cardSchema });
+  const card = (result.output.cards || []).find(item => Number(item.id) === source.id && clean(item.source_title) === clean(source.title));
+  if (!card) throw new Error("模型未返回与原始标题对应的梗卡");
+  if (!clean(card.one_sentence_premise || card.core_mechanism || card.opening_situation)) throw new Error("提炼结果缺少可用的故事信息");
+  const itemType = source.library === "market" ? "work_card" : "reality_card", derivedUrl = `manual-card://${source.id}`;
+  const existing = get("SELECT id FROM knowledge_items WHERE library=@library AND source_url=@url AND snapshot_date=@snapshot", { library: source.library, url: derivedUrl, snapshot: source.snapshot_date });
+  const values = { library: source.library, external: `manual-card-${source.id}`, title: source.title, summary: card.one_sentence_premise || source.summary, content: "", tags: source.tags_json || "[]", platform: source.platform || "手动资料", published: source.published_at, snapshot: source.snapshot_date, url: derivedUrl, narrative: JSON.stringify(card), type: itemType, updated: now() };
+  let cardId;
+  if (existing) {
+    run("UPDATE knowledge_items SET title=@title,summary=@summary,tags_json=@tags,platform=@platform,published_at=@published,narrative_json=@narrative,item_type=@type,embedding_json='[]',updated_at=@updated WHERE id=@id", { ...values, id: existing.id });
+    cardId = existing.id;
+  } else {
+    cardId = Number(run(`INSERT INTO knowledge_items(library,external_id,title,summary,content,tags_json,platform,published_at,snapshot_date,source_url,narrative_json,item_type,confidence,auto_generated,updated_at) VALUES(@library,@external,@title,@summary,@content,@tags,@platform,@published,@snapshot,@url,@narrative,@type,.9,0,@updated)`, values).lastInsertRowid);
+  }
+  let embedded = false;
+  let embeddingError = "";
+  if (embeddingConfigured()) {
+    try {
+      const [vector] = await embedTexts([`${source.title}\n${source.summary}\n${JSON.stringify(card)}`], { purpose: "document" });
+      if (vector) { run("UPDATE knowledge_items SET embedding_json=@vector,updated_at=@time WHERE id=@id", { vector: JSON.stringify(vector), time: now(), id: cardId }); embedded = true; }
+    } catch (error) { embeddingError = error.message; }
+  }
+  return { sourceId: source.id, cardId, itemType, embedded, embeddingError };
+}
+
+async function enrichPendingManualCards(limit = 4) {
+  const rows = all(`SELECT k.id FROM knowledge_items k WHERE k.auto_generated=0 AND k.item_type='source' AND length(CASE WHEN length(k.content)>0 THEN k.content ELSE k.summary END)>=30 AND NOT EXISTS (SELECT 1 FROM knowledge_items d WHERE d.source_url=('manual-card://' || k.id)) ORDER BY k.id DESC LIMIT @limit`, { limit: Number(limit) });
+  let count = 0;
+  for (const row of rows) { try { await enrichManualKnowledge(row.id); count++; } catch {} }
+  return count;
+}
+
+const parseKnowledgeItem=x=>({...x,tags:JSON.parse(x.tags_json||"[]"),narrative:JSON.parse(x.narrative_json||"{}"),embedding:JSON.parse(x.embedding_json||"[]")});
+const replacePlatformIds=(value,titleById)=>typeof value==="string"?value.replace(/ID\s*(\d+)/gi,(_match,id)=>titleById.get(Number(id))?`《${titleById.get(Number(id))}》`:""):Array.isArray(value)?value.map(item=>replacePlatformIds(item,titleById)):value&&typeof value==="object"?Object.fromEntries(Object.entries(value).map(([key,item])=>[key,replacePlatformIds(item,titleById)])):value;
+function sanitizeStoredPlatformTrends(){const titleById=new Map(all("SELECT id,title FROM knowledge_items WHERE library='market' AND item_type='work_card'").map(row=>[Number(row.id),row.title]));for(const row of all("SELECT id,summary,narrative_json FROM knowledge_items WHERE item_type='trend_card' AND (summary LIKE '%ID%' OR narrative_json LIKE '%ID%')")){let narrative;try{narrative=JSON.parse(row.narrative_json||"{}")}catch{continue}const summary=replacePlatformIds(row.summary,titleById),cleanNarrative=replacePlatformIds(narrative,titleById),narrativeJson=JSON.stringify(cleanNarrative);if(summary!==row.summary||narrativeJson!==row.narrative_json)run("UPDATE knowledge_items SET summary=@summary,narrative_json=@narrative,embedding_json='[]',updated_at=@time WHERE id=@id",{summary,narrative:narrativeJson,time:now(),id:row.id})}}
+const uniqueLatest=items=>{const seen=new Set();return items.filter(item=>{const key=`${item.library}:${item.item_type}:${item.external_id||item.title}`;if(seen.has(key))return false;seen.add(key);return true})};
+const compactEvidence=item=>({id:item.id,library:item.library,item_type:item.item_type,title:item.title,platform:item.platform,rank:item.rank_value,published_at:item.published_at,summary:item.summary,narrative:item.narrative,source_url:item.source_url,confidence:item.confidence});
+const keywordScore=(item,terms)=>terms.reduce((score,term)=>score+([item.title,item.summary,JSON.stringify(item.narrative),...(item.tags||[])].join(" ").includes(term)?1:0),0)/Math.max(1,terms.length);
+export async function searchIdeaKnowledge(project,limit=8){
+  const selected=[...new Set((project?.idea_libraries||[]).filter(item=>["reality","market"].includes(item)))];
+  if(!selected.length)return [];
+  const query=clean([project.seed,...(project.tags||[])].join(" ")),terms=[...new Set(query.split(/[\s，,、；;：:]+/).filter(term=>term.length>1))],perLibrary=Math.max(1,Math.ceil(Number(limit)/selected.length));
+  let queryVector=[];if(embeddingConfigured())try{queryVector=(await embedTexts([query],{purpose:"query"}))[0]||[]}catch{}
+  const chosen=[];for(const library of selected){const candidates=uniqueLatest(all(`SELECT k.*,s.name source_name FROM knowledge_items k LEFT JOIN sources s ON s.id=k.source_id WHERE k.library=@library AND k.item_type IN ('reality_trend','reality_card','work_card','trend_card') AND (k.expires_at IS NULL OR k.expires_at>@time) ORDER BY COALESCE(k.published_at,k.snapshot_date) DESC LIMIT 400`,{library,time:now()}).map(parseKnowledgeItem)).filter(item=>item.library!=="reality"||Number(item.confidence)>=.55);const ranked=candidates.map(item=>{const lexical=keywordScore(item,terms),semantic=queryVector.length&&item.embedding.length?Math.max(0,cosineSimilarity(queryVector,item.embedding)):0,freshness=Math.max(0,1-(Date.now()-new Date(item.published_at||item.snapshot_date).getTime())/(RETENTION_DAYS*DAY)),typeBoost=["trend_card","reality_trend"].includes(item.item_type)?.05:.1;return {item,lexical,semantic,score:semantic*.62+lexical*.23+freshness*.1+typeBoost+Number(item.confidence||0)*.05}}).filter(entry=>queryVector.length?entry.semantic>=.28||entry.lexical>0:entry.lexical>0).sort((a,b)=>b.score-a.score).slice(0,perLibrary);chosen.push(...ranked.map(entry=>compactEvidence(entry.item)));}return chosen.slice(0,Number(limit));
+}
+
+async function fetchText(url){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);try{const response=await fetch(url,{headers:{"user-agent":"Mozilla/5.0 MO-Mochao/1.0 (+local inspiration index; low frequency)",accept:"text/html,application/xhtml+xml"},signal:controller.signal});if(!response.ok)throw new Error(`HTTP ${response.status}`);return await response.text()}finally{clearTimeout(timer)}}
+async function fetchJson(url){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);try{const response=await fetch(url,{headers:{"user-agent":"Mozilla/5.0 MO-Mochao/1.0 (+local inspiration index; low frequency)",accept:"application/json"},signal:controller.signal});if(!response.ok)throw new Error(`HTTP ${response.status}`);return await response.json()}finally{clearTimeout(timer)}}
+export async function validateRssSource(value) {
+  let url;
+  try { url = new URL(String(value || "").trim()); } catch { throw new Error("RSS地址格式不正确"); }
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("RSS地址必须使用 http 或 https");
+  const parser = new Parser({ timeout: 15000 });
+  let feed;
+  try { feed = await parser.parseURL(url.href); } catch (error) { throw new Error(`无法访问或解析该RSS地址：${error.message}`); }
+  const items = Array.isArray(feed.items) ? feed.items : [];
+  if (!items.length) throw new Error("地址可以访问，但没有解析出RSS/Atom文章，请确认填写的是订阅地址而不是普通网页");
+  return { url: url.href, title: clean(feed.title) || "未命名订阅", itemCount: items.length, sampleTitle: clean(items[0]?.title) };
+}
+function upsertAutomaticItem(source,item){const snapshot=item.snapshot_date||isoDate(),published=item.published_at||snapshot,url=item.source_url||`${source.url}#${encodeURIComponent(item.external_id||item.title)}`,existing=get("SELECT id,item_type,title,summary,narrative_json,embedding_json FROM knowledge_items WHERE library=@library AND source_url=@url AND snapshot_date=@snapshot",{library:source.library,url,snapshot});const values={source:source.id,library:source.library,external:item.external_id||url,title:clean(item.title).slice(0,300),summary:clean(item.summary).slice(0,5000),content:clean(item.content||"").slice(0,12000),tags:JSON.stringify(item.tags||[]),platform:item.platform||source.name,rank:item.rank_value??null,published,snapshot,url,narrative:JSON.stringify(item.narrative||{}),type:item.item_type||"source",confidence:Number(item.confidence??.65),expires:expiresAt(published),updated:now()};if(existing){const unchanged=existing.title===values.title&&existing.summary===values.summary,derived=/^(?:reality_card|work_card)$/.test(existing.item_type||""),narrative=unchanged&&derived?existing.narrative_json:values.narrative,type=unchanged&&derived?existing.item_type:values.type,embedding=unchanged&&derived?existing.embedding_json||"[]":"[]",{title,summary,content,tags,platform,rank,published,confidence,expires,updated}=values;run(`UPDATE knowledge_items SET title=@title,summary=@summary,content=@content,tags_json=@tags,platform=@platform,rank_value=@rank,published_at=@published,narrative_json=@narrative,item_type=@type,confidence=@confidence,expires_at=@expires,embedding_json=@embedding,auto_generated=1,updated_at=@updated WHERE id=@id`,{title,summary,content,tags,platform,rank,published,narrative,type,confidence,expires,embedding,updated,id:existing.id});return existing.id}return Number(run(`INSERT INTO knowledge_items(source_id,library,external_id,title,summary,content,tags_json,platform,rank_value,published_at,snapshot_date,source_url,narrative_json,item_type,confidence,expires_at,auto_generated,updated_at) VALUES(@source,@library,@external,@title,@summary,@content,@tags,@platform,@rank,@published,@snapshot,@url,@narrative,@type,@confidence,@expires,1,@updated)`,values).lastInsertRowid)}
+function parseWeibo(html){const rows=[...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)],date=isoDate();return rows.map((match,index)=>{const row=match[1],link=row.match(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);if(!link)return null;const title=clean(link[2]);if(!title||/热搜榜|更多/.test(title))return null;const heat=Number(clean(row.match(/<span[^>]*>([\d万亿.]+)<\/span>/i)?.[1]).replace(/[^\d.]/g,""))||null;return {external_id:`weibo-${date}-${title}`,title,summary:"微博社会热搜候选话题；仅作为关注度信号，具体事实需以可靠公开来源为准。",rank_value:index+1,published_at:date,snapshot_date:date,source_url:new URL(link[1],"https://s.weibo.com").href,platform:"微博",item_type:"source",confidence:.45}}).filter(Boolean).slice(0,50)}
+function parseBaidu(html){const date=isoDate(),marker="<!--s-data:",start=html.indexOf(marker),end=start>=0?html.indexOf("-->",start+marker.length):-1;if(start<0||end<0)return [];let payload;try{payload=JSON.parse(html.slice(start+marker.length,end))}catch{return []}const card=(payload?.data?.cards||[]).find(item=>item?.component==="hotList"),content=Array.isArray(card?.content)?card.content:[];return content.slice(0,50).map((item,index)=>{const title=clean(item.word||item.query);if(!title)return null;return {external_id:`baidu-${date}-${title}`,title,summary:clean(item.desc),rank_value:Number(item.index??index)+1,published_at:date,snapshot_date:date,source_url:`https://top.baidu.com/board?tab=realtime#${encodeURIComponent(title)}`,platform:"百度热搜",item_type:"source",confidence:.65}}).filter(Boolean)}
+function parseWeiboArchive(payload){const published=isoDate(payload?.update_time||payload?.snapshot_time),list=Array.isArray(payload?.list)?payload.list:[];return list.slice(0,50).map((item,index)=>({external_id:`weibo-${published}-${item.title}`,title:clean(item.title),summary:`微博热搜历史快照；热度 ${clean(item.hot_value)||"未提供"}；数据源未提供事件正文摘要。`,rank_value:Number(item.index||index+1),published_at:published,snapshot_date:published,source_url:item.url||`https://s.weibo.com/weibo?q=${encodeURIComponent(item.title)}`,platform:"微博热搜历史快照（UApiPro聚合）",item_type:"reality_signal",confidence:.6}))}
+function collectObjects(value,out=[]){if(!value||typeof value!=="object")return out;if(Array.isArray(value)){for(const item of value)collectObjects(item,out);return out}const title=value.book_name||value.bookName||value.title||value.name,summary=value.abstract||value.book_abstract||value.description||value.intro;if(title&&summary&&clean(summary).length>30)out.push(value);for(const child of Object.values(value))if(child&&typeof child==="object")collectObjects(child,out);return out}
+function initialStateFromHtml(html){for(const match of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)){const text=match[1],marker="window.__INITIAL_STATE__=",markerAt=text.indexOf(marker),start=markerAt>=0?text.indexOf("{",markerAt+marker.length):-1;if(start<0)continue;let depth=0,inString=false,escaped=false;for(let i=start;i<text.length;i++){const char=text[i];if(inString){if(escaped)escaped=false;else if(char==="\\")escaped=true;else if(char==='"')inString=false;continue}if(char==='"'){inString=true;continue}if(char==="{")depth++;else if(char==="}"&&--depth===0)try{return JSON.parse(text.slice(start,i+1))}catch{break}}}return null}
+function parseFanqie(html,chart="番茄榜单"){const date=isoDate(),objects=[];collectObjects(initialStateFromHtml(html),objects);const seen=new Set();return objects.map((value,index)=>{const title=clean(value.book_name||value.bookName||value.title||value.name),summary=clean(value.abstract||value.book_abstract||value.description||value.intro);if(!title||!summary||seen.has(title))return null;seen.add(title);const id=String(value.book_id||value.bookId||value.id||title),tags=[chart,value.category_name,value.categoryName,...(Array.isArray(value.tags)?value.tags:[])].map(item=>clean(typeof item==="object"?item.name||item.tag_name||"":item)).filter(Boolean);return {book_id:id,external_id:`fanqie-${id}-${chart}`,title,summary,content:summary,tags,rank_value:Number(value.rank||value.rank_num||index+1),published_at:date,snapshot_date:date,source_url:`https://fanqienovel.com/page/${id}#${encodeURIComponent(chart)}`,platform:"番茄小说",item_type:"source",confidence:.9}}).filter(Boolean).slice(0,100)}
+async function hydrateFanqieItems(items){const byBook=new Map();for(const item of items)if(!byBook.has(item.book_id))byBook.set(item.book_id,[]);for(let offset=0,ids=[...byBook.keys()];offset<ids.length;offset+=4){await Promise.all(ids.slice(offset,offset+4).map(async id=>{const state=initialStateFromHtml(await fetchText(`https://fanqienovel.com/page/${id}`)),objects=[];collectObjects(state,objects);const value=objects.find(entry=>String(entry.book_id||entry.bookId||entry.id||"")===id)||objects[0];if(!value)return;const title=clean(value.book_name||value.bookName||value.title||value.name),summary=clean(value.abstract||value.book_abstract||value.description||value.intro);if(title&&summary)byBook.set(id,{title,summary,content:summary});}));}return items.map(item=>({...item,...(byBook.get(item.book_id)||{})}))}
 
 export async function updateSource(source) {
   if (!source.enabled) return { skipped: true, count: 0 };
-  if (source.kind !== "rss") throw new Error("当前自动更新器支持 RSS；其他来源可通过手动导入接入。 ");
+  if(source.kind==="hongguo_pending")return {skipped:true,count:0,reason:"等待红果官方或授权榜单接口"};
+  if(source.kind==="weibo_archive"){
+    const start=isoDate(Date.now()-RETENTION_DAYS*DAY),existingDays=new Set(all("SELECT DISTINCT snapshot_date FROM knowledge_items WHERE source_id=@id AND snapshot_date>=@start",{id:source.id,start}).map(row=>row.snapshot_date)),results=[];
+    for(let offset=RETENTION_DAYS;offset>=0&&existingDays.size<RETENTION_DAYS;offset--){const requested=new Date(Date.now()-offset*DAY),day=isoDate(requested);if(existingDays.has(day))continue;const payload=await fetchJson(`${source.url}&time=${requested.getTime()}`),items=parseWeiboArchive(payload);for(const item of items)upsertAutomaticItem(source,item);if(items.length){results.push(items.length);existingDays.add(items[0].snapshot_date)}await new Promise(resolve=>setTimeout(resolve,280));}
+    const coverage=Number(get("SELECT COUNT(DISTINCT snapshot_date) count FROM knowledge_items WHERE source_id=@id AND snapshot_date>=@start",{id:source.id,start})?.count||0),count=results.reduce((sum,value)=>sum+value,0);run("UPDATE sources SET last_run_at=@time,last_status=@status WHERE id=@id",{time:now(),status:`ok:${count} · 历史覆盖${Math.min(coverage,30)}/30天`,id:source.id});return {count,coverage:Math.min(coverage,30)};
+  }
+  if(["weibo_hot","baidu_hot","fanqie_rank"].includes(source.kind)){
+    let items=[];if(source.kind==="fanqie_rank"){const charts=[['0_1','女频新书榜'],['0_2','女频阅读榜'],['1_1','男频新书榜'],['1_2','男频阅读榜']];for(const [path,label] of charts)items.push(...parseFanqie(await fetchText(`https://fanqienovel.com/rank/${path}`),label));items=await hydrateFanqieItems(items)}else{const html=await fetchText(source.url);items=source.kind==="weibo_hot"?parseWeibo(html):parseBaidu(html)}if(!items.length)throw new Error("官方页面可访问，但当前页面结构未解析出条目；已停止入库，等待适配器更新");for(const item of items)upsertAutomaticItem(source,item);const status=source.kind==="fanqie_rank"?`ok:${items.length} · 已校正官方字体混淆 · 从接入日持续累积`:`ok:${items.length}`;run("UPDATE sources SET last_run_at=@time,last_status=@status WHERE id=@id",{time:now(),status,id:source.id});return {count:items.length};
+  }
+  if (source.kind !== "rss") throw new Error("该自动来源类型暂不受支持");
   const parser = new Parser({ timeout: 15000 });
   const feed = await parser.parseURL(source.url);
-  let count = 0;
-  const snapshot = new Date().toISOString().slice(0, 10);
-  for (const item of feed.items.slice(0, 100)) {
-    const url = item.link || item.guid || "";
-    try {
-      run(`INSERT INTO knowledge_items(source_id,library,external_id,title,summary,content,published_at,snapshot_date,source_url,narrative_json)
-           VALUES(@source_id,@library,@external_id,@title,@summary,@content,@published_at,@snapshot_date,@source_url,@narrative_json)`, {
-        source_id: source.id, library: source.library || "reality", external_id: item.guid || url,
-        title: item.title || "未命名", summary: item.contentSnippet || "", content: item.content || "",
-        published_at: item.isoDate || item.pubDate || null, snapshot_date: snapshot, source_url: url,
-        narrative_json: JSON.stringify({ scene: "待抽象", roles: [], conflict: "待抽象", transferable_mechanism: "待抽象" })
-      }); count++;
-    } catch (error) { if (!String(error.message).includes("UNIQUE")) throw error; }
-  }
-  run("UPDATE sources SET last_run_at=@time,last_status=@status WHERE id=@id", { time: now(), status: `ok:${count}`, id: source.id });
-  return { count };
+  run(`UPDATE knowledge_items SET auto_generated=1,narrative_json='{}',confidence=.7,expires_at=COALESCE(expires_at,datetime(COALESCE(published_at,snapshot_date),'+31 days')),updated_at=@time WHERE source_id=@id AND item_type='source' AND (narrative_json='{}' OR narrative_json LIKE '%待抽象%')`, { id: source.id, time: now() });
+  const items = feed.items.slice(0, 100).map((item, index) => {
+    const published = item.isoDate || item.pubDate || now(), url = item.link || item.guid || `${source.url}#${encodeURIComponent(item.title || index)}`;
+    return { external_id: item.guid || url, title: item.title || "未命名", summary: item.contentSnippet || item.summary || "", content: item.content || item["content:encoded"] || "", tags: item.categories || [], published_at: published, snapshot_date: isoDate(published), source_url: url, platform: feed.title || source.name, item_type: "source", confidence: .7 };
+  });
+  for (const item of items) upsertAutomaticItem(source, item);
+  run("UPDATE sources SET last_run_at=@time,last_status=@status WHERE id=@id", { time: now(), status: `ok:${items.length} · 已接入自动提炼与RAG`, id: source.id });
+  return { count: items.length };
 }
 
+async function enrichCards(){
+  const rows=all(`SELECT * FROM knowledge_items WHERE auto_generated=1 AND item_type='source' AND length(summary)>=30 AND (narrative_json IS NULL OR narrative_json='{}') AND (expires_at IS NULL OR expires_at>@time) ORDER BY CASE WHEN library='market' THEN 0 ELSE 1 END,id DESC LIMIT 16`,{time:now()});
+  if(!rows.length)return 0;
+  const prompt=`你是短剧市场资料分析员。根据每条公开标题、标签、摘要和正文片段提炼可检索的故事梗卡。每张卡的 source_title 必须逐字复制对应材料的 title，不得改写或与其他ID串换。只能使用材料明确支持的信息；无法判断的字段返回空字符串或空数组，禁止根据标题擅自补剧情。现实热搜材料只提炼人物关系、现实冲突、损失和可迁移机制，不把未经核实的标题当成完整事实。平台作品重点提炼开局处境、核心机制、故事发动机、关系钩子、核心期待和可视化噱头。不要复制长段原文。\n\n材料：\n${JSON.stringify(rows.map(row=>({id:row.id,library:row.library,platform:row.platform,title:row.title,tags:JSON.parse(row.tags_json||"[]"),summary:row.summary,text:clean(row.content||row.summary).slice(0,3000)})),null,2)}`;
+  const result=await generate({stage:"knowledge_cards",project:{id:0,title:"自动灵感资料库",tags:[]},prompt,schema:cardSchema});let count=0;
+  for(const card of result.output.cards||[]){const row=rows.find(item=>item.id===Number(card.id));if(!row||clean(card.source_title)!==clean(row.title))continue;const useful=clean(card.one_sentence_premise||card.core_mechanism||card.opening_situation);if(!useful)continue;run("UPDATE knowledge_items SET narrative_json=@narrative,item_type=@type,updated_at=@time WHERE id=@id",{narrative:JSON.stringify(card),type:row.library==="market"?"work_card":"reality_card",time:now(),id:row.id});count++}return count;
+}
+async function rebuildKnowledgeEmbeddings(){if(!embeddingConfigured())return 0;const rows=all(`SELECT id,title,summary,narrative_json FROM knowledge_items WHERE item_type IN ('reality_trend','work_card','reality_card','trend_card') AND (embedding_json IS NULL OR embedding_json='[]') AND (expires_at IS NULL OR expires_at>@time) ORDER BY id DESC LIMIT 64`,{time:now()});if(!rows.length)return 0;const vectors=await embedTexts(rows.map(row=>`${row.title}\n${row.summary}\n${row.narrative_json}`),{purpose:"document"});for(let i=0;i<rows.length;i++)if(vectors[i])run("UPDATE knowledge_items SET embedding_json=@vector,updated_at=@time WHERE id=@id",{vector:JSON.stringify(vectors[i]),time:now(),id:rows[i].id});return vectors.length}
+async function rebuildTrendCards(){const date=isoDate(),existing=all("SELECT id FROM knowledge_items WHERE auto_generated=1 AND item_type='trend_card' AND snapshot_date=@date",{date});if(existing.length)return 0;const works=uniqueLatest(all(`SELECT id,external_id,platform,title,rank_value,published_at,narrative_json,library,item_type FROM knowledge_items WHERE library='market' AND item_type='work_card' AND (expires_at IS NULL OR expires_at>@time) ORDER BY snapshot_date DESC,rank_value ASC LIMIT 240`,{time:now()}).map(row=>({...row,narrative:JSON.parse(row.narrative_json||"{}")}))).slice(0,120);if(works.length<3)return 0;const prompt=`你是短剧平台趋势分析员。根据近30天番茄小说、红果短剧等真实平台作品梗卡，聚合重复机制，输出最多8条趋势。趋势必须至少由2个不同作品ID支持；不能把单部作品说成趋势，不能编造热度。evidence_ids只用于程序核验；title、summary、mechanism、common_setup、payoff等给用户和写作模型阅读的文字严禁出现ID84、ID90之类内部编号。需要提及证据作品时必须写作品标题，否则直接描述共同机制。direction只写上升、稳定或待验证；saturation只写低、中或高。\n\n作品梗卡：\n${JSON.stringify(works,null,2)}`;const result=await generate({stage:"knowledge_trends",project:{id:0,title:"自动平台趋势",tags:[]},prompt,schema:trendSchema}),source=get("SELECT id FROM sources WHERE name='番茄小说官方榜单'"),titleById=new Map(works.map(work=>[Number(work.id),work.title]));let count=0;for(const [index,rawTrend] of (result.output.trends||[]).entries()){const trend=replacePlatformIds(rawTrend,titleById),ids=[...new Set((trend.evidence_ids||[]).map(Number))].filter(id=>works.some(work=>work.id===id));if(ids.length<2)continue;upsertAutomaticItem({...source,id:source?.id,library:"market",name:"平台趋势聚合",url:"trend://platform"},{external_id:`trend-${date}-${index}`,title:trend.title,summary:trend.summary,content:trend.summary,tags:[trend.audience,trend.direction,trend.saturation].filter(Boolean),published_at:date,snapshot_date:date,source_url:`trend://platform/${date}/${index}`,platform:"近30天平台聚合",item_type:"trend_card",confidence:Math.min(.95,.6+ids.length*.05),narrative:{...trend,evidence_ids:ids}});count++}return count}
+async function rebuildRealityTrendCards(){const date=isoDate(),existing=all("SELECT id FROM knowledge_items WHERE auto_generated=1 AND item_type='reality_trend' AND snapshot_date=@date",{date});if(existing.length)return 0;const raw=all(`SELECT id,title,rank_value,snapshot_date FROM knowledge_items WHERE library='reality' AND item_type='reality_signal' AND (expires_at IS NULL OR expires_at>@time) ORDER BY snapshot_date DESC,rank_value ASC`,{time:now()}),perDay=new Map();for(const item of raw){if(!perDay.has(item.snapshot_date))perDay.set(item.snapshot_date,[]);if(perDay.get(item.snapshot_date).length<10)perDay.get(item.snapshot_date).push(item)}const signals=[...perDay.values()].flat();if(new Set(signals.map(item=>item.snapshot_date)).size<3||signals.length<30)return 0;const prompt=`你是现实题材趋势分析员。下面只是近30天微博热搜的标题、日期和排名，没有新闻正文。请只聚合“反复出现的关注方向、现实矛盾类型和公众情绪”，不得把标题扩写成新闻事实，不得推断具体人物动机、责任或结果。每条趋势至少由3条不同标题支持，且证据必须跨越至少2个日期。可迁移机制只写抽象的短剧冲突机制，不复制真人真事。无足够证据的方向不输出。\n\n热搜证据：\n${JSON.stringify(signals)}`;const result=await generate({stage:"knowledge_reality_trends",project:{id:0,title:"自动现实趋势",tags:[]},prompt,schema:realityTrendSchema}),source=get("SELECT * FROM sources WHERE kind='weibo_archive'");let count=0;for(const [index,trend] of (result.output.trends||[]).entries()){const ids=[...new Set((trend.evidence_ids||[]).map(Number))].filter(id=>signals.some(signal=>signal.id===id)),evidence=ids.map(id=>signals.find(signal=>signal.id===id)).filter(Boolean),days=new Set(evidence.map(item=>item.snapshot_date));if(ids.length<3||days.size<2)continue;const minDate=[...days].sort()[0],maxDate=[...days].sort().at(-1);upsertAutomaticItem({...source,id:source?.id,library:"reality",name:"微博现实趋势",url:"trend://reality"},{external_id:`reality-trend-${date}-${index}`,title:trend.title,summary:trend.summary,content:trend.summary,tags:trend.suitable_genres||[],published_at:date,snapshot_date:date,source_url:`trend://reality/${date}/${index}`,platform:"近30天微博热搜聚合",item_type:"reality_trend",confidence:Math.min(.9,.55+ids.length*.03+days.size*.02),narrative:{...trend,time_range:`${minDate}至${maxDate}`,signal_count:ids.length,evidence_ids:ids,evidence_titles:evidence.map(item=>item.title)}});count++}return count}
+export async function processKnowledgeBacklog(){const manualEnriched=await enrichPendingManualCards(),enriched=await enrichCards(),trends=await rebuildTrendCards(),realityTrends=await rebuildRealityTrendCards(),embedded=await rebuildKnowledgeEmbeddings();return {manualEnriched,enriched,trends,realityTrends,embedded}}
+export function cleanupAutomaticKnowledge(){const result=run("DELETE FROM knowledge_items WHERE auto_generated=1 AND expires_at IS NOT NULL AND expires_at<=@time",{time:now()});return Number(result.changes||0)}
+
 export async function updateAllSources() {
+  seedAutomaticSources();
   const results = [];
   for (const source of all("SELECT * FROM sources WHERE enabled=1")) {
     try { results.push({ source: source.name, ...(await updateSource(source)) }); }
     catch (error) { run("UPDATE sources SET last_run_at=@time,last_status=@status WHERE id=@id", { time: now(), status: `error:${error.message}`, id: source.id }); results.push({ source: source.name, error: error.message }); }
   }
-  return results;
+  let enriched=0,manualEnriched=0,embedded=0,trends=0,realityTrends=0;try{manualEnriched=await enrichPendingManualCards();enriched=await enrichCards();trends=await rebuildTrendCards();realityTrends=await rebuildRealityTrendCards();embedded=await rebuildKnowledgeEmbeddings()}catch(error){results.push({source:"资料提炼与向量",error:error.message})}const deleted=cleanupAutomaticKnowledge();return {sources:results,enriched,manualEnriched,embedded,trends,realityTrends,deleted};
 }
 
+let automaticTimer=null,automaticRunning=false;
+export async function updateDueSources(){if(automaticRunning)return {skipped:true};automaticRunning=true;try{seedAutomaticSources();const due=all("SELECT * FROM sources WHERE enabled=1").filter(source=>!source.last_run_at||Date.now()-new Date(source.last_run_at).getTime()>=Number(source.update_interval_minutes||1440)*60000),results=[];for(const source of due){try{results.push({source:source.name,...await updateSource(source)})}catch(error){run("UPDATE sources SET last_run_at=@time,last_status=@status WHERE id=@id",{time:now(),status:`error:${error.message}`,id:source.id});results.push({source:source.name,error:error.message})}}let enriched=0,manualEnriched=0,trends=0,realityTrends=0,embedded=0;const creativeBusy=Number(get("SELECT COUNT(*) count FROM jobs WHERE status IN ('running','queued')")?.count||0)>0;if(!creativeBusy)try{manualEnriched=await enrichPendingManualCards();enriched=await enrichCards();trends=await rebuildTrendCards();realityTrends=await rebuildRealityTrendCards();embedded=await rebuildKnowledgeEmbeddings()}catch(error){results.push({source:"资料提炼与向量",error:error.message})}cleanupAutomaticKnowledge();return {sources:results,enriched,manualEnriched,trends,realityTrends,embedded,deferred:creativeBusy}}finally{automaticRunning=false}}
+export function startAutomaticKnowledgeUpdates(){seedAutomaticSources();setTimeout(()=>void updateDueSources(),5000);if(!automaticTimer)automaticTimer=setInterval(()=>void updateDueSources(),30*60000);return ()=>{if(automaticTimer)clearInterval(automaticTimer);automaticTimer=null}}

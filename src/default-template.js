@@ -14,6 +14,8 @@ export const DEFAULT_TEMPLATE = {
     notes:"仅在确有制作必要时使用【蒙太奇】等方括号提示",
     novelCharacters:{min:2000,ideal:2500,max:3000},
     targetCharacters:{min:1500,ideal:1750,max:2000},
+    novelAcceptance:{min:2000,max:4000},
+    scriptAcceptance:{min:1000,max:2000},
     targetScenes:{min:1,ideal:2,max:3},
     rules:[
       "标题独立一行写 EP01；卡点集可写 EP09【一卡】",

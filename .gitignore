@@ -1,5 +1,7 @@
 node_modules/
 .env
+.env.*
+!.env.example
 data/*.db
 data/*.db-*
 data/uploads/*
@@ -8,4 +10,10 @@ data/exports/*
 !data/exports/.gitkeep
 npm-debug.log*
 server*.log
+*.log
+*.sqlite
+*.sqlite3
+.DS_Store
+.vscode/
+.idea/
 tmp/

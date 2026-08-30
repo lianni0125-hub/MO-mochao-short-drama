@@ -8,14 +8,25 @@ import mammoth from "mammoth";
 process.env.APP_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "mochao-test-"));
 process.env.LLM_PROVIDER = "mock";
 process.env.EMBEDDING_PROVIDER = "mock";
+process.env.ALLOW_MOCK_WORKFLOWS = "1";
 const { app } = await import("../src/app.js");
+const { run } = await import("../src/db.js");
+const { searchIdeaKnowledge, cleanupAutomaticKnowledge, seedAutomaticSources } = await import("../src/knowledge.js");
 const { novelDescriptionIssues, novelPerspectiveIssue, splitNovelLongParagraphs } = await import("../src/llm.js");
+const { buildEpisodeNovelPrompt, buildOutlineDramaticBatchPrompt } = await import("../src/prompts.js");
 const server = app.listen(0, "127.0.0.1");
 await new Promise(resolve => server.once("listening", resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const request = async (url, options={}) => { const r=await fetch(base+url,{headers:{"content-type":"application/json"},...options}); const body=r.status===204?null:await r.json(); return {r,body}; };
 
 test("健康检查和完整创作主链", async () => {
+  const scopedConstraints=[
+    {kind:"hard",category:"ending",description:"主角最终必须回家",episode_start:null,episode_end:null},
+    {kind:"hard",category:"character",description:"苏婉清发现录音",episode_start:6,episode_end:6},
+    {kind:"hard",category:"reveal",description:"反派身份不得揭晓",episode_start:7,episode_end:9}
+  ];
+  const scopedNovel=buildEpisodeNovelPrompt({narrative_person:"first",emotion_intensity:"strong"},scopedConstraints,[],{episode_no:6},[],{generationTarget:{}},{});assert.match(scopedNovel,/主角最终必须回家/);assert.match(scopedNovel,/苏婉清发现录音/);assert.doesNotMatch(scopedNovel,/反派身份不得揭晓/);assert.match(scopedNovel,/适用EP06/);
+  const scopedBatch=buildOutlineDramaticBatchPrompt({total_episodes:10,tags:[]},scopedConstraints,[],[],[{episode_no:6}],[],[]);assert.match(scopedBatch,/苏婉清发现录音/);assert.doesNotMatch(scopedBatch,/反派身份不得揭晓/);
   assert.equal(novelPerspectiveIssue(`我推开门。\n\n「他怎么还没来？」`,"first"),"");
   assert.match(novelPerspectiveIssue(`方野推开门。\n\n「我来晚了。」`,"first"),/第一人称/);
   assert.equal(novelPerspectiveIssue(`方野推开门。\n\n「我来晚了。」`,"third"),"");
@@ -33,6 +44,18 @@ test("健康检查和完整创作主链", async () => {
   const embeddingConnection=await request("/api/settings/embedding/test",{method:"POST",body:JSON.stringify({provider:"mock"})});assert.equal(embeddingConnection.body.ok,true);assert.ok(embeddingConnection.body.dimensions>0);
   const created=await request("/api/projects",{method:"POST",body:JSON.stringify({title:"测试短剧",total_episodes:6,tags:["悬疑"],seed:"失忆的女主每天收到未来的短信"})});
   assert.equal(created.r.status,201); const id=created.body.id;
+  assert.deepEqual((await request(`/api/projects/${id}`)).body.idea_libraries,[]);
+  const selectedIdeaLibraries=await request(`/api/projects/${id}/idea-libraries`,{method:"PUT",body:JSON.stringify({libraries:["reality","market","invalid","reality"]})});assert.deepEqual(selectedIdeaLibraries.body.libraries,["reality","market"]);assert.deepEqual((await request(`/api/projects/${id}`)).body.idea_libraries,["reality","market"]);
+  const today=new Date().toISOString().slice(0,10),future=new Date(Date.now()+86400000).toISOString();run(`INSERT INTO knowledge_items(library,external_id,title,summary,snapshot_date,source_url,narrative_json,item_type,confidence,expires_at,auto_generated) VALUES('market','test-work','摆摊鉴宝逆袭','底层摊主获得鉴别古董真伪的能力',@date,'test://work',@narrative,'work_card',0.9,@expires,1)`,{date:today,expires:future,narrative:JSON.stringify({one_sentence_premise:"底层摊主依靠鉴宝能力进入古玩圈",core_mechanism:"鉴别古董真伪"})});const ragEvidence=await searchIdeaKnowledge({seed:"摆摊鉴宝",tags:["逆袭"],idea_libraries:["market"]},8);assert.ok(ragEvidence.some(item=>item.title==="摆摊鉴宝逆袭"));
+  run(`INSERT INTO knowledge_items(library,external_id,title,summary,snapshot_date,source_url,narrative_json,item_type,confidence,expires_at,auto_generated) VALUES('reality','test-signal','特殊测试热搜标题','只是原始热搜证据',@date,'test://signal','{}','reality_signal',0.9,@expires,1),('reality','test-reality-trend','特殊测试现实趋势','多日多标题聚合得出的现实矛盾趋势',@date,'test://reality-trend',@trend,'reality_trend',0.9,@expires,1)`,{date:today,expires:future,trend:JSON.stringify({summary:"现实趋势摘要",transferable_mechanism:"冲突机制"})});const realityEvidence=await searchIdeaKnowledge({seed:"特殊测试",tags:["现实趋势"],idea_libraries:["reality"]},8);assert.ok(realityEvidence.some(item=>item.item_type==="reality_trend"));assert.ok(!realityEvidence.some(item=>item.item_type==="reality_signal"));
+  run(`INSERT INTO knowledge_items(library,title,snapshot_date,source_url,item_type,expires_at,auto_generated) VALUES('market','过期资料',@date,'test://expired','work_card','2000-01-01T00:00:00.000Z',1)`,{date:today});assert.ok(cleanupAutomaticKnowledge()>=1);seedAutomaticSources();const knowledgeStatus=await request("/api/knowledge/status");assert.equal(knowledgeStatus.body.retentionDays,30);assert.ok(knowledgeStatus.body.sources.some(item=>item.name==="番茄小说官方榜单"));assert.ok(knowledgeStatus.body.sources.some(item=>item.name==="红果短剧官方榜单"&&item.enabled===0));
+  await request(`/api/projects/${id}/idea-libraries`,{method:"PUT",body:JSON.stringify({libraries:[]})});assert.deepEqual((await request(`/api/projects/${id}`)).body.idea_libraries,[]);
+  const builtinTemplate=(await request(`/api/projects/${id}`)).body.templates.find(item=>item.id==="default");
+  const customFormat=structuredClone(builtinTemplate.analysis);customFormat.inferredScriptFormat.novelCharacters={min:1801,ideal:1999,max:2800};customFormat.inferredScriptFormat.novelAcceptance={min:1600,max:3200};customFormat.inferredScriptFormat.scriptAcceptance={min:1200,max:2200};customFormat.inferredScriptFormat.targetScenes={min:2,ideal:3,max:4};
+  const createdFormatTemplate=await request("/api/templates",{method:"POST",body:JSON.stringify({source_mode:"default",project_id:id,name:"自定义篇幅格式",analysis:customFormat})});assert.equal(createdFormatTemplate.r.status,201);assert.equal(createdFormatTemplate.body.analysis.inferredScriptFormat.novelCharacters.ideal,2301);assert.equal(createdFormatTemplate.body.analysis.inferredScriptFormat.novelAcceptance.min,1600);assert.equal(createdFormatTemplate.body.analysis.inferredScriptFormat.novelAcceptance.max,3200);assert.equal(createdFormatTemplate.body.analysis.inferredScriptFormat.scriptAcceptance.min,1200);assert.equal(createdFormatTemplate.body.analysis.inferredScriptFormat.targetScenes.ideal,3);assert.equal(createdFormatTemplate.body.analysis.inferredScriptFormat.targetScenes.max,4);
+  const afterFormatTemplate=(await request(`/api/projects/${id}`)).body;assert.ok(afterFormatTemplate.templates.some(item=>item.name==="自定义篇幅格式"));
+  const scopedConstraint=await request(`/api/projects/${id}/constraints`,{method:"POST",body:JSON.stringify({category:"reveal",description:"只在第三至第五集生效",episode_start:3,episode_end:5})});assert.equal(scopedConstraint.r.status,201);assert.equal(scopedConstraint.body.episode_start,3);assert.equal(scopedConstraint.body.episode_end,5);
+  const invalidConstraint=await request(`/api/projects/${id}/constraints`,{method:"POST",body:JSON.stringify({category:"reveal",description:"非法范围",episode_start:5,episode_end:3})});assert.equal(invalidConstraint.r.status,400);
   const thirdPerson=await request(`/api/projects/${id}/narrative-person`,{method:"PUT",body:JSON.stringify({narrative_person:"third"})});assert.equal(thirdPerson.body.narrative_person,"third");
   assert.equal((await request(`/api/projects/${id}`)).body.narrative_person,"third");
   const firstPerson=await request(`/api/projects/${id}/narrative-person`,{method:"PUT",body:JSON.stringify({narrative_person:"first"})});assert.equal(firstPerson.body.narrative_person,"first");

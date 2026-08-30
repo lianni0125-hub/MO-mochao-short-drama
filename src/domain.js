@@ -30,7 +30,7 @@ export function canonicalRelationshipSubject(subject) {
 
 export function parseProject(row) {
   if (!row) return null;
-  return { ...row, tags: JSON.parse(row.tags_json || "[]") };
+  return { ...row, tags: JSON.parse(row.tags_json || "[]"), idea_libraries:JSON.parse(row.idea_libraries_json||"[]") };
 }
 
 export function parseArtifact(row) {

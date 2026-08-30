@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS projects (
   total_episodes INTEGER NOT NULL DEFAULT 60,
   audience TEXT DEFAULT '', platform TEXT DEFAULT '', restrictions TEXT DEFAULT '',
   seed TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'idea',
-  current_stage TEXT NOT NULL DEFAULT 'idea', template_id TEXT NOT NULL DEFAULT 'default',
+  current_stage TEXT NOT NULL DEFAULT 'idea', template_id TEXT NOT NULL DEFAULT 'default', idea_libraries_json TEXT NOT NULL DEFAULT '[]', story_mode TEXT NOT NULL DEFAULT 'normal',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   episode_no INTEGER NOT NULL, title TEXT DEFAULT '', summary TEXT DEFAULT '', purpose TEXT DEFAULT '',
   start_state TEXT DEFAULT '', end_state TEXT DEFAULT '', required_plot TEXT DEFAULT '',
   must_reveal TEXT DEFAULT '', must_not_reveal TEXT DEFAULT '', rhythm TEXT DEFAULT '', emotion TEXT DEFAULT '',
-  card_relation TEXT DEFAULT '', novel TEXT DEFAULT '', novel_summary TEXT DEFAULT '', episode_plan TEXT DEFAULT '', character_identifiers_json TEXT DEFAULT '[]', script TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'planned',
+  card_relation TEXT DEFAULT '', first_appearance_characters TEXT DEFAULT '', novel TEXT DEFAULT '', novel_summary TEXT DEFAULT '', episode_plan TEXT DEFAULT '', character_identifiers_json TEXT DEFAULT '[]', script TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'planned',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
   UNIQUE(project_id, episode_no)
@@ -316,6 +316,15 @@ try { db.exec("ALTER TABLE projects ADD COLUMN emotion_intensity TEXT NOT NULL D
 try { db.exec("ALTER TABLE projects ADD COLUMN narrative_person TEXT NOT NULL DEFAULT 'first'"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN sort_order INTEGER"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN deleted_at TEXT"); } catch {}
+try { db.exec("ALTER TABLE projects ADD COLUMN idea_libraries_json TEXT NOT NULL DEFAULT '[]'"); } catch {}
+try { db.exec("ALTER TABLE projects ADD COLUMN story_mode TEXT NOT NULL DEFAULT 'normal'"); } catch {}
+try { db.exec("ALTER TABLE knowledge_items ADD COLUMN item_type TEXT NOT NULL DEFAULT 'source'"); } catch {}
+try { db.exec("ALTER TABLE knowledge_items ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5"); } catch {}
+try { db.exec("ALTER TABLE knowledge_items ADD COLUMN expires_at TEXT"); } catch {}
+try { db.exec("ALTER TABLE knowledge_items ADD COLUMN embedding_json TEXT DEFAULT '[]'"); } catch {}
+try { db.exec("ALTER TABLE knowledge_items ADD COLUMN auto_generated INTEGER NOT NULL DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE knowledge_items ADD COLUMN updated_at TEXT"); } catch {}
+db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_active ON knowledge_items(library,item_type,expires_at)");
 db.exec("UPDATE projects SET sort_order=id WHERE sort_order IS NULL");
 db.exec("CREATE INDEX IF NOT EXISTS idx_projects_deleted_at ON projects(deleted_at)");
 try { db.exec("ALTER TABLE episodes ADD COLUMN scene_treatment TEXT DEFAULT ''"); } catch {}
@@ -323,6 +332,8 @@ try { db.exec("ALTER TABLE episodes ADD COLUMN novel TEXT DEFAULT ''"); } catch 
 try { db.exec("ALTER TABLE episodes ADD COLUMN novel_summary TEXT DEFAULT ''"); } catch {}
 try { db.exec("ALTER TABLE episodes ADD COLUMN episode_plan TEXT DEFAULT ''"); } catch {}
 try { db.exec("ALTER TABLE episodes ADD COLUMN character_identifiers_json TEXT DEFAULT '[]'"); } catch {}
+try { db.exec("ALTER TABLE episodes ADD COLUMN first_appearance_characters TEXT DEFAULT ''"); } catch {}
+db.exec("UPDATE templates SET project_id=NULL WHERE project_id IS NOT NULL");
 try { db.exec("ALTER TABLE jobs ADD COLUMN elapsed_ms INTEGER NOT NULL DEFAULT 0"); } catch {}
 try { db.exec("ALTER TABLE jobs ADD COLUMN attempt_started_at TEXT"); } catch {}
 try { db.exec("ALTER TABLE jobs ADD COLUMN auto_retry_count INTEGER NOT NULL DEFAULT 0"); } catch {}

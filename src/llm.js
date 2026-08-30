@@ -15,7 +15,7 @@ const schemas = {
   expectations: {type:"object",additionalProperties:true},
   characters: {type:"object",additionalProperties:true},
   skeleton: objectSchema({ main_plot:string, core_conflict:string, key_secrets:stringArray, ending:string, cards:{type:"array",items:{type:"object",additionalProperties:true}}, phases:stringArray }),
-  outline: objectSchema({ episodes:{type:"array",items:objectSchema({ episode_no:{type:"integer"},title:string,summary:string,hook:string,purpose:string,start_state:string,end_state:string,required_plot:string,must_reveal:string,must_not_reveal:string,rhythm:string,emotion:string,card_relation:string })} }),
+  outline: objectSchema({ episodes:{type:"array",items:objectSchema({ episode_no:{type:"integer"},title:string,summary:string,hook:string,purpose:string,start_state:string,end_state:string,required_plot:string,must_reveal:string,must_not_reveal:string,rhythm:string,emotion:string,card_relation:string,first_appearance_characters:string })} }),
   state_update: objectSchema({items:{type:"array",items:objectSchema({category:{type:"string",enum:["fact","knowledge","relationship","capability","system","character","prop","unresolved"]},subject:string,value:string,status:{type:"string",enum:["active","resolved","replaced"]}})}}),
   quality: objectSchema({passed:{type:"boolean"},issues:{type:"array",items:objectSchema({severity:string,category:string,message:string})},suggestions:stringArray})
   ,scene_treatment: objectSchema({scene_treatment:string})
@@ -92,17 +92,32 @@ export function cleanEpisodeText(content){
   return result.join("\n");
 }
 
+function plannedCompositeScenes(value){
+  const block=String(value||"").match(/【剧情安排】([\s\S]*?)(?=\n【逻辑推理】|$)/)?.[1]||"",groups=new Map();
+  for(const raw of block.split(/\r?\n/)){const match=raw.trim().match(/^(\d+)\s+(内\/外|外\/内|内景?|外景?)\s+(.+)$/);if(!match)continue;const number=Number(match[1]),tail=match[3].trim(),routeText=tail.replace(/\s+(?:凌晨|清晨|早晨|上午|中午|下午|傍晚|黄昏|深夜|夜|日|白天|夜晚|当天)(?:至(?:凌晨|清晨|早晨|上午|中午|下午|傍晚|黄昏|深夜|夜|日|白天|夜晚))?\s*$/,""),locations=routeText.split("→").map(item=>item.trim()).filter(Boolean),group=groups.get(number)||{number,locations:[],composite:false};for(const location of locations)if(!group.locations.includes(location))group.locations.push(location);group.composite=group.composite||locations.length>1||groups.has(number);groups.set(number,group)}
+  return [...groups.values()].filter(group=>group.composite&&group.locations.length>1);
+}
+
 function episodePerformanceIssues(text,extra={}){
-  const lines=String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean),sceneLines=lines.filter(line=>/^\d+\s+(?:内景?|外景?)\s+.+/.test(line));
-  const actionLines=lines.filter(line=>!/^EP\s*\d+/i.test(line)&&!/^\d+\s+(?:内景?|外景?)/.test(line)&&!/^.{1,30}(?:\s+V\.O\.|\s+OS)?\s*：/.test(line));
+  const scenePattern=/^\d+\s+(?:内\/外|外\/内|内景?|外景?)\s+.+/,lines=String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean),sceneLines=lines.filter(line=>scenePattern.test(line));
+  const actionLines=lines.filter(line=>!/^EP\s*\d+/i.test(line)&&!scenePattern.test(line)&&!/^.{1,30}(?:\s+V\.O\.|\s+OS)?\s*：/.test(line));
   const actionSentences=actionLines.flatMap(line=>line.split(/(?<=[。！？!?])/).map(x=>x.trim()).filter(Boolean));
   const issues=[];
+  const silentEpisode=/(?:全程无声|不能出声|禁止说话|不得说话|无台词)/.test([extra.episode?.summary,extra.episode?.required_plot,extra.episode?.must_not_reveal].filter(Boolean).join("\n"));
+  const spokenLines=lines.filter(line=>/^[^：\n]{1,30}(?:\s+V\.O\.|\s+OS)?：\S+/.test(line));
+  if(!silentEpisode&&!spokenLines.length)issues.push("整集没有任何台词或主角V.O.；单人场景也必须用有行动目的的外说、自言自语或必要主角V.O.形成语言节奏，不得凭空新增人物、电话、广播、系统激活或未知事实");
+  const premature=(extra.forbiddenAppearanceCharacters||[]).find(name=>{const escaped=String(name).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");return lines.some(line=>new RegExp(`^${escaped}(?:\s+(?:V\\.O\\.|OS))?：|^${escaped}.{0,12}(?:走|跑|冲|站|坐|跪|推|拉|抓|抬|看|盯|笑|问|喊|说|开口|出现|进来|离开)`).test(line));});
+  if(premature)issues.push(`主要人物“${premature}”尚未到规划的首次出场集，却已在本集现场行动或说话`);
   if(/[（）()]/.test(String(text)))issues.push("出现任何圆括号或小括号");
   if(extra.sourceNarrativePerson==="third"){const quotedDialogue=lines.find(line=>/[「」“”]/.test(line));if(quotedDialogue)issues.push(`排版未正确换行，残留第三人称小说的对白引号或嵌入式对白：“${quotedDialogue.slice(0,100)}”；识别实际说话人，去掉引号，拆成独立动作行与“人物：台词”行`);}
   if(sceneLines.length<1||sceneLines.length>3)issues.push(`场次数为${sceneLines.length}，必须严格为1–3场`);
+  for(const group of plannedCompositeScenes(extra.episode?.episode_plan)){
+    const heading=sceneLines.find(line=>Number(line.match(/^(\d+)/)?.[1])===group.number)||"",markers=lines.filter(line=>/^【(?:内\/外|外\/内|内景?|外景?)\s+.+】$/.test(line)),headingMissing=group.locations.filter(location=>!heading.includes(location)),markerIndexes=group.locations.map(location=>markers.findIndex(line=>line.includes(location)));
+    if(!heading||headingMissing.length||markerIndexes.some(index=>index<0)||markerIndexes.some((index,i)=>i>0&&index<=markerIndexes[i-1]))issues.push(`未忠实执行剧情安排的复合场次${group.number}：总标题必须保留“${group.locations.join("→")}”，并按此顺序使用独立方括号转场标记；转场不另编号，也不得与正文混排`);
+  }
   if(extra.shortSceneHeading){const wrong=sceneLines.find(line=>/^\d+\s+(?:内景|外景)\s+|\s+(?:白天|夜晚)$/.test(line));if(wrong)issues.push(`默认模板场次标题格式错误：“${wrong}”；应使用“序号 外/内 地点 日/夜”`);}
   const crowdedLine=lines.find(line=>{
-    if(/^EP\s*\d+/i.test(line)||/^\d+\s+(?:内景?|外景?)\s+.+/.test(line))return false;
+    if(/^EP\s*\d+/i.test(line)||scenePattern.test(line))return false;
     const startsWithDialogue=/^[\p{Script=Han}A-Za-z0-9·]{1,20}(?:\s+V\.O\.|\s+OS)?：/u.test(line);
     const prefixes=[...line.matchAll(/(?:^|[。！？!?]\s*)([\p{Script=Han}A-Za-z0-9·]{1,20})(?:\s+V\.O\.|\s+OS)?：/gu)];
     if(!startsWithDialogue){
@@ -203,11 +218,15 @@ function validatePlainOutput(stage,output,extra={}){
     const perspectiveIssue=novelPerspectiveIssue(text,extra.narrativePerson==="third"?"third":"first");if(perspectiveIssue)return perspectiveIssue;
     if(/[（）()]/.test(text))return "小说出现了禁止使用的圆括号";
     if(/["“”]/.test(text))return "小说对白出现了双引号，必须统一使用「」";
+    const silentEpisode=/(?:全程无声|不能出声|禁止说话|不得说话|无台词)/.test([extra.episode?.summary,extra.episode?.required_plot,extra.episode?.must_not_reveal].filter(Boolean).join("\n"));
+    if(!silentEpisode&&!/「[^」\n]+」/.test(text))return "整章没有任何直接语言；单人场景也应使用有行动目的的外说、自言自语或必要的直接内心语言，不得凭空新增人物、电话、广播、系统激活或未知事实";
     const labelledSpeech=(text.match(/(?:说|问)\s*[：:]\s*「/g)||[]).length;
     // “人物+真实动作：「台词」”是 Skill 允许的小说格式，不能误判为人物名冒号。
     if(labelledSpeech>=5)return `小说反复使用了刻板的“说/问：台词”格式（共 ${labelledSpeech} 处）`;
     const descriptionIssues=novelDescriptionIssues(text);if(descriptionIssues.length)return `小说段落超过40个汉字：${descriptionIssues.slice(0,12).map(item=>`第${item.paragraph}段${item.count}字“${item.text.slice(0,55)}”`).join("；")}`;
     const knowledgeIssue=unauthorizedGoldenKnowledgeIssue(text,extra,stage);if(knowledgeIssue)return knowledgeIssue;
+    const escapeRegex=value=>String(value).replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),premature=(extra.forbiddenAppearanceCharacters||[]).find(name=>new RegExp(`${escapeRegex(name)}(?:[^\n「」]{0,16}：「|[^\n，。！？；]{0,10}(?:走|跑|冲|站|坐|跪|推|拉|抓|抬|看|盯|笑|问|喊|说|开口|出现|进来|离开))`).test(text));
+    if(premature)return `主要人物“${premature}”尚未到规划的首次出场集，却已在本集现场行动或说话`;
   }
   if(stage==="episode_novel_summary"){
     const required=["关键事件：","人物与状态：","精确锚点：","结尾局面："];
@@ -235,6 +254,8 @@ function validatePlainOutput(stage,output,extra={}){
 }
 function repairInstruction(stage,error,extra={}){
   const reason=String(error||"格式错误");
+  if(stage==="episode"&&/复合场次/.test(reason))return `上一版只需修正分场结构：${reason}。剧情安排中的编号是权威场次分组，不得改变剧情、对白、事件顺序或钩子。每个复合场次只保留一个编号总标题；按标题路线依次加入独立成行的“【内 地点 时间】”或“【外 地点 时间】”转场标记，标记不另编号，不与动作或对白混排。将原有内容移动到对应地点下，不得删减、扩写或新增场次。只输出修订后的完整剧本。`;
+  if(["episode_novel","episode"].includes(stage)&&/整(?:章|集)没有任何/.test(reason))return `上一版的问题是：${reason}。保留全部既有事件、顺序、因果、人物、能力、道具和钩子，只在现有行动节点中补入少量有行动目的的直接语言。优先使用已经在场或已有依据的说话者；若只有主角，可让主角对眼前目标或危险外说、自言自语，或用一句必要的主角${stage==="episode"?"V.O.":"直接内心语言"}表达会改变下一步行动的判断。不得新增人物、联系人、广播事实、系统激活、人物知情或新事件，不得让无语言能力的对象突然说话，也不得用语言复述已写清的动作和背景。只输出修订后的完整${stage==="episode"?"剧本":"小说"}。`;
   if(stage==="episode_novel"&&/小说锁定为(?:第一|第三)人称/.test(reason)){
     return extra.narrativePerson==="third"
       ? `错误：${reason}。只修正叙述段的人称，把主角叙述统一为第三人称限知视角，使用主角固定姓名以及与其性别一致的“他”或“她”；删除叙述中的“我、我们、咱们”自称。不得修改「」内的任何对白，因为对白中的“我”是人物正常说话。不得进入其他人物内心，不改事件、顺序、因果、人物认知和钩子。只输出修订后的完整小说。`
@@ -303,11 +324,11 @@ function mock(stage, project, extra = {}) {
     cards: [{ name: "一卡", position: Math.max(3, Math.round(project.total_episodes * .2)), buildup: "建立危机与关系", event: "首次重大揭露", state_change: "主角由求生转为调查", promise: "幕后真相", next_phase: "主动探索" }, { name: "二卡", position: Math.round(project.total_episodes * .6), buildup: "同盟与秘密积累", event: "关系破裂或重大失败", state_change: "优势归零", promise: "绝地反击", next_phase: "终局准备" }],
     phases: ["建立规则与人物", "冲突升级与调查", "重大失败与重组", "终局反击"]
   };
-  if (stage === "outline") return { episodes: Array.from({ length: project.total_episodes }, (_, i) => ({ episode_no: i + 1, title: `第${i + 1}集`, summary: `推进第 ${i + 1} 集的阶段目标，并产生新的状态变化。`, scene_treatment: "人物因明确需求进入核心场景，当前行动直接招致阻力，各方连续交锋并造成状态变化，最后由新危险打断本轮冲突。", hook: "一个迫近的新危险在结尾出现，并由下一集直接承接。", purpose: i === 0 ? "建立主角困境与核心钩子" : "推进主线并改变人物关系或信息状态", start_state: "承接上一集悬念", end_state: "形成新的行动压力", required_plot: "至少发生一次有效剧情推进", must_reveal: "", must_not_reveal: "未到计划节点的核心秘密", rhythm: "快速承接冲突，压缩解释，在中后段发生明确状态变化，结尾不完全释放", emotion: "不安逐渐升高→短暂缓解→新证据触发警觉→悬置", card_relation: "按故事阶段蓄力或兑现" })) };
+  if (stage === "outline") return { episodes: Array.from({ length: project.total_episodes }, (_, i) => ({ episode_no: i + 1, title: `第${i + 1}集`, summary: `推进第 ${i + 1} 集的阶段目标，并产生新的状态变化。`, scene_treatment: "人物因明确需求进入核心场景，当前行动直接招致阻力，各方连续交锋并造成状态变化，最后由新危险打断本轮冲突。", hook: "一个迫近的新危险在结尾出现，并由下一集直接承接。", purpose: i === 0 ? "建立主角困境与核心钩子" : "推进主线并改变人物关系或信息状态", start_state: "承接上一集悬念", end_state: "形成新的行动压力", required_plot: "至少发生一次有效剧情推进", must_reveal: "", must_not_reveal: "未到计划节点的核心秘密", rhythm: "快速承接冲突，压缩解释，在中后段发生明确状态变化，结尾不完全释放", emotion: "不安逐渐升高→短暂缓解→新证据触发警觉→悬置", card_relation: "按故事阶段蓄力或兑现", first_appearance_characters:i===0?"待定":"无" })) };
   if(stage==="outline_chunk")return {episodes:Array.from({length:extra.end-extra.start+1},(_,i)=>{const no=extra.start+i;return {episode_no:no,title:`第${no}集`,summary:`推进第 ${no} 集的阶段目标并产生新的状态变化。`,scene_treatment:"人物因明确需求进入场景，行动招致阻力，冲突连续升级并以新危险收尾。",hook:"结尾出现下一集必须直接承接的新危险。",purpose:"推进主线",start_state:"承接上一集",end_state:"形成新压力",required_plot:"发生有效剧情推进",must_reveal:"",must_not_reveal:"未到节点的秘密",rhythm:"快速推进",emotion:"压力升高→悬置",card_relation:"按阶段蓄力或兑现"}})};
-  if(stage==="outline_spine")return {episodes:Array.from({length:extra.end-extra.start+1},(_,i)=>{const no=extra.start+i;return {episode_no:no,phase:"主线阶段",inherited_state:no===1?"核心困境正在发生":`承接EP${no-1}结尾行动`,dramatic_task:"人物为现实目标面对具体阻力",state_change:"冲突造成新的局势变化",ending_action:`一个必须由EP${no+1}承接的具体行动出现`,future_boundary:"后续秘密不得提前揭示"}})};
-  if(stage==="outline_dramatic")return {episodes:Array.from({length:extra.end-extra.start+1},(_,i)=>{const no=extra.start+i;return {episode_no:no,title:`第${no}集`,dramatic_design:"人物从已经发生的危机直接行动，对手基于利益采取具体施压，现实后果迫使人物作出选择，新的行动在结尾出现。",summary:"人物为解决现实危机采取行动，对手以具体行为加压并造成可见后果，人物被迫选择后迎来新的危险。",hook:"新的危险或行动在结尾发生。",purpose:"推进主线并改变局势",start_state:"承接上一集",end_state:"形成新的行动压力",rhythm:"危机切入→升级→选择→钩子",emotion:"受压→加剧→转机→悬置",card_relation:"按阶段蓄力或兑现"}})};
-  if(stage==="outline_finalize")return {episodes:Array.from({length:extra.end-extra.start+1},(_,i)=>{const no=extra.start+i;return {episode_no:no,title:`第${no}集`,summary:"人物从已经发生的危机直接行动，对手以现实利益施压并造成可见后果，人物应对后被迫作出选择，新的危险随即出现。",hook:"新的危险或行动在结尾发生。",purpose:"推进主线并改变局势",start_state:"承接上一集结尾",end_state:"形成新的行动压力",required_plot:"人物直接应对开场危机→对手采取具体施压行为→现实后果迫使人物改变选择→人物获得转机并采取行动→新的危险在结尾出现",must_reveal:"",must_not_reveal:"无",rhythm:"危机切入→升级→选择→钩子",emotion:"受压→加剧→转机→悬置",card_relation:"按阶段蓄力或兑现"}})};
+  if(stage==="outline_spine")return {episodes:Array.from({length:extra.end-extra.start+1},(_,i)=>{const no=extra.start+i;return {episode_no:no,phase:"主线阶段",inherited_state:no===1?"核心困境正在发生":`承接EP${no-1}结尾行动`,dramatic_task:"人物为现实目标面对具体阻力",state_change:"冲突造成新的局势变化",ending_action:`一个必须由EP${no+1}承接的具体行动出现`,future_boundary:"后续秘密不得提前揭示",first_appearance_characters:no===1?"待定":"无"}})};
+  if(stage==="outline_dramatic")return {episodes:Array.from({length:extra.end-extra.start+1},(_,i)=>{const no=extra.start+i;return {episode_no:no,title:`第${no}集`,dramatic_design:"人物从已经发生的危机直接行动，对手基于利益采取具体施压，现实后果迫使人物作出选择，新的行动在结尾出现。",summary:"人物为解决现实危机采取行动，对手以具体行为加压并造成可见后果，人物被迫选择后迎来新的危险。",hook:"新的危险或行动在结尾发生。",purpose:"推进主线并改变局势",start_state:"承接上一集",end_state:"形成新的行动压力",rhythm:"危机切入→升级→选择→钩子",emotion:"受压→加剧→转机→悬置",card_relation:"按阶段蓄力或兑现",first_appearance_characters:no===1?"待定":"无"}})};
+  if(stage==="outline_finalize")return {episodes:Array.from({length:extra.end-extra.start+1},(_,i)=>{const no=extra.start+i;return {episode_no:no,title:`第${no}集`,summary:"人物从已经发生的危机直接行动，对手以现实利益施压并造成可见后果，人物应对后被迫作出选择，新的危险随即出现。",hook:"新的危险或行动在结尾发生。",purpose:"推进主线并改变局势",start_state:"承接上一集结尾",end_state:"形成新的行动压力",required_plot:"人物直接应对开场危机→对手采取具体施压行为→现实后果迫使人物改变选择→人物获得转机并采取行动→新的危险在结尾出现",must_reveal:"",must_not_reveal:"无",rhythm:"危机切入→升级→选择→钩子",emotion:"受压→加剧→转机→悬置",card_relation:"按阶段蓄力或兑现",first_appearance_characters:no===1?"待定":"无"}})};
   if(stage==="scene_treatment_text")return "人物因明确需求进入核心场景，当前行动直接招致阻力；冲突双方在同一空间连续交锋，上一事件造成的后果立即触发下一事件，最终准确落到既定钩子。";
   if(stage==="episode_boundaries_text")return "【必须发生】完成本集梗概中的关键行动、冲突与状态变化；准确抵达既定钩子\n【不得揭示】无";
   if(stage==="episode_boundary_text")return "完成本集梗概中的关键行动、冲突与状态变化；准确抵达既定钩子";
@@ -430,7 +451,7 @@ export async function generate({ stage, project, prompt, extra = {}, schema = nu
 export async function testConnection({ providerId, apiKey, baseUrl, model }) {
   const configured=activeProvider();
   const provider=providerId===configured.id?{...configured,apiKey:apiKey||configured.apiKey,baseUrl:baseUrl||configured.baseUrl,model:model||configured.model}:{id:providerId,label:providerId,protocol:providerId==="openai"?"responses":"chat_completions",apiKey,baseUrl,model};
-  if(provider.id==="mock")return {ok:true,latencyMs:0,reply:"离线演示模式无需连接"};
+  if(provider.id==="mock")return {ok:true,latencyMs:0,reply:"离线界面演示无需连接"};
   if(!provider.apiKey)throw new Error("请先填写或保存该供应商的 API Key");
   if(!provider.baseUrl)throw new Error("请填写 API Base URL");
   if(!provider.model)throw new Error("请填写模型名称");

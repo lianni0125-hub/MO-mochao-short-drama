@@ -13,5 +13,7 @@ if (fs.existsSync(envPath)) {
 const { app } = await import("./app.js");
 const { config } = await import("./config.js");
 const { resumeJobs } = await import("./jobs.js");
+const { startAutomaticKnowledgeUpdates } = await import("./knowledge.js");
 resumeJobs();
-app.listen(config.port, "127.0.0.1", () => console.log(`\nAI 短剧编剧工作台已启动：http://127.0.0.1:${config.port}\n`));
+startAutomaticKnowledgeUpdates();
+app.listen(config.port, config.host, () => console.log(`\nAI 短剧编剧工作台已启动：http://${config.host}:${config.port}\n`));

@@ -4,7 +4,7 @@ import { activeEmbeddingProvider, config, embeddingProviderDefaults } from "./co
 const clean=value=>String(value||"").replace(/\s+/g," ").trim();
 function mockVector(value){const vector=new Array(64).fill(0);for(const [index,char] of [...clean(value)].entries())vector[(char.codePointAt(0)+index*17)%vector.length]+=1;const norm=Math.hypot(...vector)||1;return vector.map(item=>item/norm);}
 
-export function embeddingConfigured(){const provider=activeEmbeddingProvider();return provider.id==="mock"||Boolean(provider.apiKey&&provider.baseUrl&&provider.model);}
+export function embeddingConfigured(){const provider=activeEmbeddingProvider();return provider.id==="mock"?process.env.ALLOW_MOCK_WORKFLOWS==="1":Boolean(provider.apiKey&&provider.baseUrl&&provider.model);}
 
 export async function embedTexts(values,{signal,providerOverride,purpose="document"}={}){
   const input=values.map(clean).filter(Boolean);if(!input.length)return [];
