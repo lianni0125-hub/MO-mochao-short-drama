@@ -1,13 +1,12 @@
 {
-  "version": "1.3.0",
-  "title": "多模型接入与剧本成稿优化",
-  "publishedAt": "2026-09-01",
+  "version": "1.3.1",
+  "title": "DeepSeek 长文本生成稳定性优化",
+  "publishedAt": "2026-09-02",
   "notes": [
-    "新增百度千帆正文生成与 bge-large-zh 向量接口，各供应商 Key 独立保存",
-    "剧本转换加强心理信息口语化、套路化 AI 动作清理与复合地点正式分场",
-    "剧本正文改为直接从第一场开始，DOCX 导出统一添加 EP 集号，避免重复",
-    "自动移除小说修订返回中多余的 Markdown“修订后正文”标题"
+    "DeepSeek V4 正式创作显式使用非思考模式，减少长文本超时、截断与空输出",
+    "DeepSeek 结构化任务启用原生 JSON 输出，提高梗概、人物和状态提炼的解析稳定性",
+    "DeepSeek API 测试同步验证非思考模式与结构化输出能力"
   ],
-  "portableAsset": "MO-mochao-Windows-v1.3.0.zip",
+  "portableAsset": "MO-mochao-Windows-v1.3.1.zip",
   "url": "https://github.com/lianni0125-hub/MO-mochao-short-drama"
 }
