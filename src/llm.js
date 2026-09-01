@@ -53,11 +53,12 @@ export function novelPerspectiveIssue(value,narrativePerson="first"){
   }
   return /我/.test(narration)?"":"小说锁定为第一人称，但叙述正文没有使用“我”作为主角叙述视角";
 }
-const normalizeNovelText=value=>String(value||"")
+export const stripNovelRevisionHeading=value=>String(value||"").replace(/^\s{0,3}#{1,6}\s*修订后正文\s*(?:\r?\n|$)/i,"").trim();
+const normalizeNovelText=value=>stripNovelRevisionHeading(String(value||"")
   .replace(/“([^”\n]+)”/g,"「$1」")
   .replace(/"([^"\n]+)"/g,"「$1」")
   .replace(/[（）()]/g,"")
-  .trim();
+  .trim());
 
 export function cleanEpisodeText(content){
   let text=String(content||"").replace(/<think>[\s\S]*?<\/think>/gi,"").trim();
@@ -89,7 +90,7 @@ export function cleanEpisodeText(content){
     }else result.push(...run);
     i=end;
   }
-  return result.join("\n");
+  return result.join("\n").replace(/^\s*(?:\*\*)?\s*EP\s*0*\d+(?:\s*【[^】]+】)?\s*(?:\*\*)?\s*(?:\r?\n|$)/i,"").trim();
 }
 
 function plannedCompositeScenes(value){
@@ -110,10 +111,14 @@ function episodePerformanceIssues(text,extra={}){
   if(premature)issues.push(`主要人物“${premature}”尚未到规划的首次出场集，却已在本集现场行动或说话`);
   if(/[（）()]/.test(String(text)))issues.push("出现任何圆括号或小括号");
   if(extra.sourceNarrativePerson==="third"){const quotedDialogue=lines.find(line=>/[「」“”]/.test(line));if(quotedDialogue)issues.push(`排版未正确换行，残留第三人称小说的对白引号或嵌入式对白：“${quotedDialogue.slice(0,100)}”；识别实际说话人，去掉引号，拆成独立动作行与“人物：台词”行`);}
-  if(sceneLines.length<1||sceneLines.length>3)issues.push(`场次数为${sceneLines.length}，必须严格为1–3场`);
+  if(sceneLines.length<1||sceneLines.length>9)issues.push(`场次数为${sceneLines.length}，最终剧本必须为1–9个正式场次`);
+  const sceneNumbers=sceneLines.map(line=>Number(line.match(/^(\d+)/)?.[1]));
+  if(sceneNumbers.some((number,index)=>number!==index+1))issues.push(`正式场次编号不连续：当前为${sceneNumbers.join("、")}；必须从1开始按出现顺序连续编号`);
+  const internalSceneMarker=lines.find(line=>/^【(?:内\/外|外\/内|内景?|外景?)\s+.+】$/.test(line));
+  if(internalSceneMarker)issues.push(`仍在使用旧的复合场次内部转场标记：“${internalSceneMarker}”；地点或主时间变化必须拆成独立编号的正式场次`);
   for(const group of plannedCompositeScenes(extra.episode?.episode_plan)){
-    const heading=sceneLines.find(line=>Number(line.match(/^(\d+)/)?.[1])===group.number)||"",markers=lines.filter(line=>/^【(?:内\/外|外\/内|内景?|外景?)\s+.+】$/.test(line)),headingMissing=group.locations.filter(location=>!heading.includes(location)),markerIndexes=group.locations.map(location=>markers.findIndex(line=>line.includes(location)));
-    if(!heading||headingMissing.length||markerIndexes.some(index=>index<0)||markerIndexes.some((index,i)=>i>0&&index<=markerIndexes[i-1]))issues.push(`未忠实执行剧情安排的复合场次${group.number}：总标题必须保留“${group.locations.join("→")}”，并按此顺序使用独立方括号转场标记；转场不另编号，也不得与正文混排`);
+    const locationIndexes=group.locations.map(location=>sceneLines.findIndex(line=>line.includes(location)));
+    if(locationIndexes.some(index=>index<0)||locationIndexes.some((index,i)=>i>0&&index<=locationIndexes[i-1]))issues.push(`未正确拆分剧情安排推进段${group.number}的地点路线“${group.locations.join("→")}”：每个地点必须按既定顺序成为独立编号的正式场次，不得合并、遗漏或颠倒`);
   }
   if(extra.shortSceneHeading){const wrong=sceneLines.find(line=>/^\d+\s+(?:内景|外景)\s+|\s+(?:白天|夜晚)$/.test(line));if(wrong)issues.push(`默认模板场次标题格式错误：“${wrong}”；应使用“序号 外/内 地点 日/夜”`);}
   const crowdedLine=lines.find(line=>{
@@ -141,7 +146,19 @@ function episodePerformanceIssues(text,extra={}){
   const expositionPattern=/(?:看起来像|期限(?:正在)?逼近|期限将至|在医院(?:里)?等着[^。！？]{0,12}(?:钱|救命)|(?:逼着|催着)[^。！？]{0,12}(?:要|交|赔|还)|(?:口袋里?|身上)只剩|声音[^。！？]{0,8}卡在(?:喉咙|嗓子)里|话[^。！？]{0,8}(?:堵|卡)在(?:喉咙|嗓子)里|张(?:开|了)?嘴[^。！？]{0,10}(?:说不出话|没说出话))/;
   const exposition=actionSentences.find(line=>expositionPattern.test(line));
   if(exposition)issues.push(`动作段写成了作者交代、矛盾摘要或无效迟疑：“${exposition.slice(0,100)}”（命中：${exposition.match(expositionPattern)?.[0]}）；前五类必要信息应优先改成现场对白、点数实物或明确道具，无法自然外化时可用一句主角 V.O.，不必要则删除；无效迟疑不能改成 V.O.`);
-  const forbiddenPattern=/(?:瞳孔骤缩|眼睛一亮|眼中闪过|眼神一沉|眼神一凛|眼里闪着[^。！？]{0,16}光|眼里[^。！？]{0,12}看热[闹鬧闘]|嘴角(?:微微)?上扬|眉头一皱|脸(?:色)?一阵青一阵白|脸(?:色)?青一阵白一阵|脸色(?:骤然|猛地)?一变|倒吸凉气|攥紧拳头|手指[^。！？]{0,12}泛白|指甲[^。！？]{0,16}掐进掌心|掌心[^。！？]{0,12}血丝|咬牙|打颤|沉默|不说话|盯着看|显得|似乎|好像|仿佛|闻到|听得|看得|得像[^。！？]{1,24}|像.+一样|夕阳|余晖|夜幕降临|天色渐暗|太阳落山|路灯亮|风像|寒气逼人)/;
+  const psychologicalLedgerPattern=/(?:还(?:在|有|没|未|揣|悬)|仍(?:在|然|未)|依旧|又多了|而现在|悬而未决|在耳边回荡|不管[^。！？]{0,24}都必须|必须面对)/;
+  let psychologicalLedger=[];
+  for(const line of lines){
+    const structural=/^EP\s*\d+/i.test(line)||scenePattern.test(line)||/^.{1,30}(?:\s+V\.O\.|\s+OS)?\s*：/.test(line);
+    if(structural){psychologicalLedger=[];continue;}
+    if(psychologicalLedgerPattern.test(line)){psychologicalLedger.push(line);if(psychologicalLedger.length>=3)break;}
+    else psychologicalLedger=[];
+  }
+  if(psychologicalLedger.length>=3)issues.push(`连续多行保留了回顾、盘点或判断式心理旁白：“${psychologicalLedger.join(" ").slice(0,140)}”；把整块作为一个心理信息块处理，只保留会改变主角当前行动的必要认知，压缩并口语化为一至两句主角 V.O.；重复前情、账本式罗列和泛泛总结直接删除，不得逐句改成多条 V.O.`);
+  const aiBodyClichePattern=/(?:指节(?:都|已经|微微)?发白|手指关节(?:都|已经|微微)?发白|青筋(?:根根)?暴起|指甲[^。！？]{0,16}掐进掌心|掌心[^。！？]{0,12}(?:渗出)?血丝|手背[^。！？]{0,12}(?:筋络|青筋)[^。！？]{0,8}(?:凸起|暴起))/;
+  const aiBodyCliche=actionSentences.find(line=>aiBodyClichePattern.test(line));
+  if(aiBodyCliche)issues.push(`出现套路化的 AI 身体细节：“${aiBodyCliche.slice(0,100)}”（命中：${aiBodyCliche.match(aiBodyClichePattern)?.[0]}）；删除这类装饰性情绪反应。只保留真正影响事件的动作，不补写替代性神态或身体细节，不改变剧情及其他合格内容`);
+  const forbiddenPattern=/(?:瞳孔骤缩|眼睛一亮|眼中闪过|眼神一沉|眼神一凛|眼里闪着[^。！？]{0,16}光|眼里[^。！？]{0,12}看热[闹鬧闘]|嘴角(?:微微)?上扬|眉头一皱|脸(?:色)?一阵青一阵白|脸(?:色)?青一阵白一阵|脸色(?:骤然|猛地)?一变|倒吸凉气|攥紧拳头|咬牙|打颤|沉默|不说话|盯着看|显得|似乎|好像|仿佛|闻到|听得|看得|得像[^。！？]{1,24}|像.+一样|夕阳|余晖|夜幕降临|天色渐暗|太阳落山|路灯亮|风像|寒气逼人)/;
   const forbidden=actionSentences.find(line=>forbiddenPattern.test(line));
   if(forbidden)issues.push(`出现Skill禁止的情绪、状态、环境、感官或套路描写：“${forbidden.slice(0,100)}”（命中：${forbidden.match(forbiddenPattern)?.[0]}）`);
   const summaryAction=actionLines.find(line=>{
@@ -254,7 +271,7 @@ function validatePlainOutput(stage,output,extra={}){
 }
 function repairInstruction(stage,error,extra={}){
   const reason=String(error||"格式错误");
-  if(stage==="episode"&&/复合场次/.test(reason))return `上一版只需修正分场结构：${reason}。剧情安排中的编号是权威场次分组，不得改变剧情、对白、事件顺序或钩子。每个复合场次只保留一个编号总标题；按标题路线依次加入独立成行的“【内 地点 时间】”或“【外 地点 时间】”转场标记，标记不另编号，不与动作或对白混排。将原有内容移动到对应地点下，不得删减、扩写或新增场次。只输出修订后的完整剧本。`;
+  if(stage==="episode"&&/(?:拆分剧情安排推进段|复合场次内部转场标记|正式场次编号不连续)/.test(reason))return `上一版只需修正分场结构：${reason}。剧情安排编号只是按顺序组织剧情的推进段；遇到地点或主时间变化，改成独立编号的正式场次，并从1开始连续编号。删除复合地点总标题和方括号内部转场标记，将原有内容按既定地点顺序移动到对应场次；不得改变、删减或扩写剧情、对白、事件顺序和钩子。只输出修订后的完整剧本。`;
   if(["episode_novel","episode"].includes(stage)&&/整(?:章|集)没有任何/.test(reason))return `上一版的问题是：${reason}。保留全部既有事件、顺序、因果、人物、能力、道具和钩子，只在现有行动节点中补入少量有行动目的的直接语言。优先使用已经在场或已有依据的说话者；若只有主角，可让主角对眼前目标或危险外说、自言自语，或用一句必要的主角${stage==="episode"?"V.O.":"直接内心语言"}表达会改变下一步行动的判断。不得新增人物、联系人、广播事实、系统激活、人物知情或新事件，不得让无语言能力的对象突然说话，也不得用语言复述已写清的动作和背景。只输出修订后的完整${stage==="episode"?"剧本":"小说"}。`;
   if(stage==="episode_novel"&&/小说锁定为(?:第一|第三)人称/.test(reason)){
     return extra.narrativePerson==="third"
@@ -336,7 +353,7 @@ function mock(stage, project, extra = {}) {
   if(stage==="episode_novel_summary")return "关键事件：上一章的核心冲突已经发生并造成明确结果。\n人物与状态：人物关系、认知、能力与关键道具保持上一章结尾状态。\n精确锚点：无。\n结尾局面：主角正面对尚未结束的现场局面，并准备执行已经启动的即时行动。";
   if(stage==="episode_novel")return project.narrative_person==="third"?`主角被逼到核心场景的角落，眼前的问题已经没有退路。对手步步紧逼，他只能抓住最后的机会。\n\n「这件事还没结束。」主角迎着对手走过去，「你欠下的结果，现在该兑现了。」`:`我被逼到核心场景的角落，眼前的问题已经没有退路。对手步步紧逼，我只能抓住最后的机会。\n\n「这件事还没结束。」我迎着他走过去，「你欠下的结果，现在该兑现了。」`;
   if(stage==="episode_arrangement")return `【情绪走向】\n本集情绪曲线：压抑（危机逼近）→ 转机（获得行动机会）→ cliffhanger（决定行动）\n节奏比例：约7:3，前段压透，后段出现转机并决定行动\n\n【情绪节点】\n压透阶段：危机被推到无法回避\n转机：主角获得明确破局机会\ncliffhanger：主角决定立即行动\n\n【剧情安排】\n1 外 核心场景 日\n（承接既定事件+冲突升级+获得转机+主角决定行动，cliffhanger）\n\n【逻辑推理】\n1. 前一事件如何引发下一事件？→ 前一事件的结果直接迫使主角采取行动。\n2. 主角为什么决定行动？→ 现实危机使其没有退路。\n逻辑检查：✓ 无问题`;
-  if (stage === "episode") return `EP${String(extra.episode?.episode_no || 1).padStart(2, "0")}\n\n1 外 核心场景 日\n\n承接上一集的危机，人物立即采取行动。\n\n主角：事情没有我们想的那么简单。\n\n远处传来异响，所有人同时停下动作。\n\n一个本不该出现在这里的人，缓缓走进众人的视线。`;
+  if (stage === "episode") return `1 外 核心场景 日\n\n承接上一集的危机，人物立即采取行动。\n\n主角：事情没有我们想的那么简单。\n\n远处传来异响，所有人同时停下动作。\n\n一个本不该出现在这里的人，缓缓走进众人的视线。`;
   if (stage === "state_update") return { items: [] };
   if(stage==="memory_characters")return {characters:[{name:"待定",aliases:[],initial_identity:"故事开始时的核心人物",personality:"面对现实压力会先判断局势，再作出明确行动",backstory:""}]};
   if(stage==="memory_events"){const quote="承接上一集的危机，人物立即采取行动。";return String(extra.episode?.script||"").includes(quote)?{events:[{order:1,event_type:"event",subject:"主角",action:"采取行动",object_text:"应对上一集遗留危机",qualifier_text:"",result_text:"开始处理眼前问题",location:"核心场景",time_text:"日",summary:"主角开始采取行动处理上一集遗留危机",participants:["主角"],source_quote:quote,follows_candidate_id:null,relation:"无"}]}:{events:[]};}

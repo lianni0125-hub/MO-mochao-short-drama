@@ -12,7 +12,7 @@ process.env.ALLOW_MOCK_WORKFLOWS = "1";
 const { app } = await import("../src/app.js");
 const { run } = await import("../src/db.js");
 const { searchIdeaKnowledge, cleanupAutomaticKnowledge, seedAutomaticSources } = await import("../src/knowledge.js");
-const { novelDescriptionIssues, novelPerspectiveIssue, splitNovelLongParagraphs } = await import("../src/llm.js");
+const { novelDescriptionIssues, novelPerspectiveIssue, splitNovelLongParagraphs, stripNovelRevisionHeading } = await import("../src/llm.js");
 const { buildEpisodeNovelPrompt, buildOutlineDramaticBatchPrompt } = await import("../src/prompts.js");
 const { createWorkspaceBackup, restoreWorkspaceBackup, validateWorkspaceBackup } = await import("../src/backup.js");
 const { detectInstallMode } = await import("../src/updater.js");
@@ -44,11 +44,14 @@ test("健康检查和完整创作主链", async () => {
   assert.equal(novelDescriptionIssues(`我把面具拿到眼前，反复观察上面每一道已经干裂的纹路，又沿着边缘慢慢摸索，试图从那些细小痕迹里找出隐藏的信息和制造者留下的线索。`).length,1);
   assert.equal(novelDescriptionIssues(`王志远端起茶杯：「这只算见面礼，你敢不敢跟我去市场走一趟，把剩下那批原石全看完，再替我把所有鉴定结果逐件写清楚？」`).length,1);
   assert.equal(novelDescriptionIssues(`王志远端起茶杯：「这只算见面礼，敢不敢跟我去市场？」`).length,0);
+  assert.equal(stripNovelRevisionHeading("# 修订后正文\n\n我推开门。"),"我推开门。");
   assert.equal((await request("/api/health")).body.ok, true);
   const iframeChild=await fetch(`${base}/vendor/iframeResizer.contentWindow.min.js`);assert.equal(iframeChild.status,200);assert.match(await iframeChild.text(),/iFrameResizer/);
   const home=await fetch(`${base}/`);assert.match(await home.text(),/iframeResizer\.contentWindow\.min\.js/);
   const connection=await request("/api/settings/llm/test",{method:"POST",body:JSON.stringify({provider:"mock"})});assert.equal(connection.body.ok,true);
+  const providerSettings=(await request("/api/settings/llm")).body,baiduText=providerSettings.providers.find(item=>item.id==="baidu");assert.equal(baiduText?.baseUrl,"https://qianfan.baidubce.com/v2");assert.equal(baiduText?.model,"ernie-5.0");
   const embeddingConnection=await request("/api/settings/embedding/test",{method:"POST",body:JSON.stringify({provider:"mock"})});assert.equal(embeddingConnection.body.ok,true);assert.ok(embeddingConnection.body.dimensions>0);
+  const modelSettings=(await request("/api/settings/llm")).body,baiduEmbedding=modelSettings.embeddingProviders.find(item=>item.id==="baidu");assert.equal(baiduEmbedding?.baseUrl,"https://qianfan.baidubce.com/v2");assert.equal(baiduEmbedding?.model,"bge-large-zh");
   const created=await request("/api/projects",{method:"POST",body:JSON.stringify({title:"测试短剧",total_episodes:6,tags:["悬疑"],seed:"失忆的女主每天收到未来的短信"})});
   assert.equal(created.r.status,201); const id=created.body.id;
   assert.deepEqual((await request(`/api/projects/${id}`)).body.idea_libraries,[]);
@@ -80,7 +83,7 @@ test("健康检查和完整创作主链", async () => {
     const approved=await request(`/api/projects/${id}/artifacts/${stage}/approve`,{method:"POST",body:"{}"}); assert.equal(approved.r.status,200);
   }
   const project=(await request(`/api/projects/${id}`)).body; assert.equal(project.episodes.length,6); assert.equal(project.current_stage,"writing");
-  const episode=await request(`/api/projects/${id}/episodes/1/generate`,{method:"POST",body:"{}"}); assert.match(episode.body.script,/EP01/);assert.ok(episode.body.novel);assert.match(episode.body.episode_plan,/【逻辑推理】/);assert.match(episode.body.character_identifiers_json,/主角/);
+  const episode=await request(`/api/projects/${id}/episodes/1/generate`,{method:"POST",body:"{}"}); assert.doesNotMatch(episode.body.script,/^EP01/m);assert.match(episode.body.script,/^1\s+外/m);assert.ok(episode.body.novel);assert.match(episode.body.episode_plan,/【逻辑推理】/);assert.match(episode.body.character_identifiers_json,/主角/);
   const quality=await request(`/api/projects/${id}/episodes/1/quality`,{method:"POST",body:"{}"}); assert.equal(quality.body.modelReview.passed,true);assert.equal(typeof quality.body.metrics.characters,"number");
   const background=await request(`/api/projects/${id}/jobs/full-book`,{method:"POST",body:JSON.stringify({overwrite:false,auto_retry_limit:7})});assert.equal(background.r.status,202);assert.equal(background.body.auto_retry_limit,7);
   let job;for(let i=0;i<200;i++){await new Promise(r=>setTimeout(r,20));job=(await request(`/api/projects/${id}/jobs`)).body.find(x=>x.id===background.body.id);if(["completed","failed"].includes(job.status))break;}

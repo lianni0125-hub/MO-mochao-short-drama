@@ -27,6 +27,7 @@ export const config = {
     minimax:process.env.MINIMAX_EMBEDDING_API_KEY||(process.env.EMBEDDING_PROVIDER==="minimax"?process.env.EMBEDDING_API_KEY||"":""),
     zhipu:process.env.ZHIPU_EMBEDDING_API_KEY||(process.env.EMBEDDING_PROVIDER==="zhipu"?process.env.EMBEDDING_API_KEY||"":""),
     qwen:process.env.QWEN_EMBEDDING_API_KEY||(process.env.EMBEDDING_PROVIDER==="qwen"?process.env.EMBEDDING_API_KEY||"":""),
+    baidu:process.env.BAIDU_QIANFAN_EMBEDDING_API_KEY||(process.env.EMBEDDING_PROVIDER==="baidu"?process.env.EMBEDDING_API_KEY||"":""),
     custom:process.env.CUSTOM_EMBEDDING_API_KEY||(process.env.EMBEDDING_PROVIDER==="custom"?process.env.EMBEDDING_API_KEY||"":"")
   },
   providerKeys: {
@@ -36,6 +37,7 @@ export const config = {
     deepseek: process.env.DEEPSEEK_API_KEY || "",
     qwen: process.env.DASHSCOPE_API_KEY || "",
     moonshot: process.env.MOONSHOT_API_KEY || "",
+    baidu: process.env.BAIDU_QIANFAN_API_KEY || "",
     custom: process.env.CUSTOM_API_KEY || ""
   }
 };
@@ -47,6 +49,7 @@ export const providerDefaults = {
   deepseek: { label:"DeepSeek", baseUrl:"https://api.deepseek.com", model:"deepseek-v4-flash", protocol:"chat_completions" },
   qwen: { label:"通义千问（阿里云百炼）", baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1", model:"qwen3.8-max", protocol:"chat_completions" },
   moonshot: { label:"Kimi / 月之暗面", baseUrl:"https://api.moonshot.cn/v1", model:"kimi-k2.6", protocol:"chat_completions" },
+  baidu: { label:"百度千帆", baseUrl:"https://qianfan.baidubce.com/v2", model:"ernie-5.0", protocol:"chat_completions" },
   custom: { label:"其他 OpenAI-compatible API", baseUrl:"", model:"", protocol:"chat_completions" },
   mock: { label:"离线界面演示", baseUrl:"", model:"local-demo", protocol:"mock" }
 };
@@ -57,6 +60,7 @@ export const embeddingProviderDefaults = {
   minimax: {label:"MiniMax Embedding（embo-01）",baseUrl:"https://api.minimaxi.com/v1",model:"embo-01",protocol:"minimax"},
   zhipu: {label:"智谱 Embedding",baseUrl:"https://open.bigmodel.cn/api/paas/v4",model:"embedding-3"},
   qwen: {label:"通义千问 Embedding",baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1",model:"text-embedding-v4"},
+  baidu: {label:"百度千帆 Embedding",baseUrl:"https://qianfan.baidubce.com/v2",model:"bge-large-zh"},
   custom: {label:"其他 OpenAI-compatible Embedding",baseUrl:"",model:""},
   mock: {label:"离线向量测试",baseUrl:"",model:"local-embedding"}
 };

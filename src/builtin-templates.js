@@ -7,7 +7,7 @@ export const ZHIHU_YANXUAN_MANJU_TEMPLATE = {
   version:1,
   planningSections:DEFAULT_TEMPLATE.planningSections,
   scriptFormat:{
-    episodeHeading:"EP01",
+    episodeHeading:"",
     sceneHeading:"场次序号 外/内 地点 日/夜",
     dialogue:"角色名：台词",
     voiceOver:"角色名 V.O.：画外音；角色名 OS：内心独白，均不使用括号",
@@ -18,12 +18,10 @@ export const ZHIHU_YANXUAN_MANJU_TEMPLATE = {
     targetCharacters:{min:500,ideal:700,max:900},
     novelAcceptance:{min:700,ideal:1000,max:1300},
     scriptAcceptance:{min:500,ideal:700,max:900},
-    targetScenes:{min:1,ideal:2,max:3},
+    targetScenes:{min:1,ideal:2,max:9},
     writingRules:[],
     normalization:[],
-    sampleExcerpt:`EP02
-
-1 外 近海海面下 日
+    sampleExcerpt:`1 外 近海海面下 日
 
 海水浑浊冰冷，Kane手中紧握着断裂的钢板尖角，被鲨鱼拖着不断下沉。
 

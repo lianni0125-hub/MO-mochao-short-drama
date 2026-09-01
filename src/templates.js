@@ -25,7 +25,7 @@ export function templateContext(project){
 export function templateWritingGuide(template){
   const raw=template?.analysis?.inferredScriptFormat||DEFAULT_TEMPLATE.scriptFormat;
   const format={
-    episodeHeading:raw.episodeHeading||raw.episode_heading||"EP01",
+    episodeHeading:"",
     sceneHeading:raw.sceneHeading||raw.scene_heading||"序号 + 内景/外景 + 地点 + 时间",
     dialogue:raw.dialogue||"角色名：台词",
     voiceOver:raw.voiceOver||raw.voice_over||"",

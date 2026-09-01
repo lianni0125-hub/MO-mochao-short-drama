@@ -1,11 +1,13 @@
 {
-  "version": "1.2.9",
-  "title": "AutoDL APP 内嵌兼容",
+  "version": "1.3.0",
+  "title": "多模型接入与剧本成稿优化",
   "publishedAt": "2026-09-01",
   "notes": [
-    "新增 AutoDL Art APP 所需的 iframe-resizer 子页面握手支持",
-    "墨潮独立运行方式与现有创作、数据和任务流程保持不变"
+    "新增百度千帆正文生成与 bge-large-zh 向量接口，各供应商 Key 独立保存",
+    "剧本转换加强心理信息口语化、套路化 AI 动作清理与复合地点正式分场",
+    "剧本正文改为直接从第一场开始，DOCX 导出统一添加 EP 集号，避免重复",
+    "自动移除小说修订返回中多余的 Markdown“修订后正文”标题"
   ],
-  "portableAsset": "MO-mochao-Windows-v1.2.9.zip",
+  "portableAsset": "MO-mochao-Windows-v1.3.0.zip",
   "url": "https://github.com/lianni0125-hub/MO-mochao-short-drama"
 }
