@@ -211,9 +211,9 @@ async function runOutlineBatched(job,project){
   if(!spine.length){
     const baseSpinePrompt=buildOutlineSpinePrompt(project,constraints,artifacts),spinePrompt=preserved.length?`${baseSpinePrompt}\n\n【已锁定且绝对不可改写的 EP01–EP${String(preservedEnd).padStart(2,"0")}】\n${JSON.stringify(preserved,null,2)}\n\n重新建立全剧因果骨架时，前述已锁定分集只作为既定前史；EP${String(requestedStart).padStart(2,"0")}–EP${String(totalEpisodes).padStart(2,"0")} 必须承接它们继续发展。仍按原格式返回 EP01–EP${String(totalEpisodes).padStart(2,"0")} 的骨架，但后续正式分集生成只会从 EP${String(requestedStart).padStart(2,"0")} 开始，严禁篡改或重新设计已锁定集。`:baseSpinePrompt;
     const mainNames=(artifacts.find(item=>item.type==="characters")?.content?.characters||[]).map(item=>String(item.name||"").trim()).filter(Boolean);let spineResult,spineIssues=[];
-    for(let round=1;round<=3;round++){
+    for(let round=1;round<=20;round++){
       const repairPrompt=round===1?spinePrompt:`${spinePrompt}\n\n【上一版骨架】\n${JSON.stringify(spine,null,2)}\n\n【定向修订】\n${spineIssues.join("；")}。只修正 episode_no 与 first_appearance_characters 的完整性、合法姓名和唯一首登场位置，其余因果设计保持不变；重新返回完整骨架。`;
-      run("UPDATE jobs SET message=@message WHERE id=@id",{message:round===1?`正在建立 ${totalEpisodes} 集全剧因果骨架`:`首次出场规划未通过，正在定向修订（${round}/3）：${spineIssues.join("；")}`,id:job.id});
+      run("UPDATE jobs SET message=@message WHERE id=@id",{message:round===1?`正在建立 ${totalEpisodes} 集全剧因果骨架`:`首次出场规划未通过，正在定向修订（${round}/20）：${spineIssues.join("；")}`,id:job.id});
       spineResult=await generate({stage:"outline_spine",project,prompt:repairPrompt,schema:episodeListSchema,extra:{start:1,end:totalEpisodes},signal:currentSignal()});
       spine=(spineResult.output?.episodes||[]).filter(item=>Number(item.episode_no)>=1&&Number(item.episode_no)<=totalEpisodes).sort((a,b)=>a.episode_no-b.episode_no);spineIssues=[];
       if(spine.length!==totalEpisodes)spineIssues.push(`应返回${totalEpisodes}集，实际${spine.length}集`);
@@ -222,7 +222,7 @@ async function runOutlineBatched(job,project){
       if(unknown.length)spineIssues.push(`非03主要人物：${unknown.join("、")}`);if(duplicates.length)spineIssues.push(`重复标记：${duplicates.join("、")}`);if(missing.length)spineIssues.push(`尚未标记：${missing.join("、")}`);
       if(!spineIssues.length)break;
     }
-    if(spineIssues.length)throw new Error(`主要人物首次出场规划不合格；${spineIssues.join("；")}`);
+    if(spineIssues.length)throw new Error(`主要人物首次出场规划连续20轮仍不合格；${spineIssues.join("；")}`);
     run("INSERT INTO generations(project_id,stage,provider,model,prompt,output,status,input_tokens,output_tokens) VALUES(@pid,'outline_spine',@provider,@model,@prompt,@output,'completed',@input,@out)",{pid:project.id,provider:spineResult.provider,model:spineResult.model,prompt:spinePrompt,output:JSON.stringify(spineResult.output),input:spineResult.usage.input_tokens||0,out:spineResult.usage.output_tokens||0});
     checkpoint.spine=spine;checkpoint.generated=preserved;checkpoint.next_batch=Math.floor(preservedEnd/batchSize);run("UPDATE jobs SET checkpoint_json=@checkpoint,progress=@progress,message='全剧因果骨架已完成，开始分窗口设计戏剧梗概' WHERE id=@id",{checkpoint:JSON.stringify(checkpoint),progress:1+checkpoint.next_batch*2,id:job.id});
   }
