@@ -37,6 +37,16 @@ const normalizeOutlineEpisode=ep=>({...ep,episode_no:Number(ep?.episode_no),titl
 const appearanceNames=value=>[...new Set(String(value||"").split(/[；;、,，\n]+/).map(item=>item.trim()).filter(item=>item&&!/^(?:无|暂无|没有)$/.test(item)))];
 const obviousPlannedAppearance=(value,name)=>new RegExp(`${String(name).replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}.{0,16}(?:进入|来到|出现|赶到|走进|冲进|拦住|抓住|推开|质问|命令|邀请|威胁|攻击|救下|带走|开口|说|问|喊)`).test(String(value||""));
 const appearanceMap=episodes=>{const map=new Map();for(const ep of episodes||[])for(const name of appearanceNames(ep.first_appearance_characters))if(!map.has(name))map.set(name,Number(ep.episode_no));return map;};
+const outlineStoryWorldEpisodeLeak=value=>{
+  const text=String(value||"");if(!text)return "";
+  const episodeMeta=/(?:EP\s*0*\d+|第[零〇一二三四五六七八九十百两\d]+集|本集|这一集|上(?:一)?集|下(?:一)?集)/i;
+  for(const match of text.matchAll(/[「“]([^」”]{1,160})[」”]/g)){
+    const quote=match[1];
+    if(episodeMeta.test(quote)&&!/(?:电视剧|连续剧|动画|节目|短剧|剧本|作品)\s*(?:的)?\s*(?:EP\s*0*\d+|第[零〇一二三四五六七八九十百两\d]+集)/i.test(quote))return match[0];
+  }
+  const carrier=/(?:日记|信件|纸条|短信|消息|记录本|录音|广播|屏幕|弹幕|系统(?:音|提示|播报)?|预言|预告)(?:中|里|上)?(?:写着|写下|记着|记载|显示|出现|提示|播报|宣告|预告|告诉|传来|响起|称|说)[^。！？\n]{0,100}?(?:EP\s*0*\d+|第[零〇一二三四五六七八九十百两\d]+集|本集|这一集|上(?:一)?集|下(?:一)?集)/i;
+  return text.match(carrier)?.[0]||"";
+};
 const characterAppearanceContext=(projectId,episodeNo,characterCards=[])=>{
   const rows=all("SELECT episode_no,first_appearance_characters FROM episodes WHERE project_id=@pid ORDER BY episode_no",{pid:projectId}),planned=appearanceMap(rows);
   if(!planned.size)return {text:"",forbidden:[]};
@@ -243,6 +253,8 @@ async function runOutlineBatched(job,project){
         const nodes=String(episodes[i].required_plot||"").split(/→/).map(x=>x.trim()).filter(Boolean);
         if(nodes.length<4)semanticIssues.push(`EP${expected}必须发生至少需要4个事件节点，实际${nodes.length}个`);
         if(!String(episodes[i].summary||"").trim()||!String(episodes[i].hook||"").trim())semanticIssues.push(`EP${expected}梗概或钩子为空`);
+        const leaked=outlineStoryWorldEpisodeLeak([episodes[i].summary,episodes[i].hook,episodes[i].required_plot,episodes[i].must_reveal,episodes[i].must_not_reveal].join("\n"));
+        if(leaked)semanticIssues.push(`EP${expected}把创作集数泄漏进角色或故事内载体：“${leaked.slice(0,120)}”。保留既定事件，删除故事世界对作品集数的感知；有世界内依据时改为具体日期、约定、证据或威胁，没有依据则删除该预知，不得只换成“不久后”`);
       }
       if(!semanticIssues.length)break;
     }
