@@ -22,6 +22,13 @@ export const ARTIFACT_TITLES = {
 
 export const STATE_CATEGORIES = ["knowledge", "relationship", "goal", "fact", "foreshadow", "prop", "identity", "capability", "system", "character", "unresolved"];
 
+export function resolveProtagonist(characters=[]){
+  const list=Array.isArray(characters)?characters:[];
+  const explicit=list.find(item=>/(?:^|[男女])主角|男主|女主/.test(String(item?.role||"")));
+  const selected=explicit||list[0]||null;
+  return {name:String(selected?.name||"").trim(),explicit:Boolean(explicit),fallback:Boolean(selected&&!explicit)};
+}
+
 export function canonicalRelationshipSubject(subject) {
   const parts=String(subject||"").split(/\s*(?:↔|与|和|—|-)\s*/).map(x=>x.trim()).filter(Boolean);
   if(parts.length!==2||parts.some(x=>x.length>24))return String(subject||"").trim();

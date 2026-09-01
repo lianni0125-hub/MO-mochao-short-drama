@@ -6,7 +6,7 @@ import express from "express";
 import multer from "multer";
 import { activeEmbeddingProvider, activeProvider, config, embeddingProviderDefaults, providerDefaults } from "./config.js";
 import { all, detachLegacyStoryStateFromControls, get, run, now, transaction } from "./db.js";
-import { ARTIFACT_TITLES, STAGES, canonicalRelationshipSubject, parseArtifact, parseProject } from "./domain.js";
+import { ARTIFACT_TITLES, STAGES, canonicalRelationshipSubject, parseArtifact, parseProject, resolveProtagonist } from "./domain.js";
 import { buildCharacterImagePromptPrompt, buildStagePrompt } from "./prompts.js";
 import { generate, testConnection } from "./llm.js";
 import { analyzeDocx, exportProjectDocx } from "./documents.js";
@@ -357,11 +357,16 @@ app.post("/api/projects/:id/artifacts/:type/approve", requireProject, (req, res)
     const planning=JSON.parse(artifact.content_json||"{}"),approvedTitle=String(planning.title||"").trim();
     if(approvedTitle)run("UPDATE projects SET title=@title,updated_at=@time WHERE id=@id",{title:approvedTitle,time:now(),id:req.project.id});
   }
-  if(req.params.type==="characters")enqueueJob(req.project.id,"memory_characters","approved");
+  let warning="";
+  if(req.params.type==="characters"){
+    const characters=JSON.parse(artifact.content_json||"{}").characters||[],protagonist=resolveProtagonist(characters);
+    if(protagonist.fallback)warning=`未检测到“主角/男主/女主”标识，后续将默认把03第一个人物“${protagonist.name}”视为主角。`;
+    enqueueJob(req.project.id,"memory_characters","approved");
+  }
   const idx = STAGES.findIndex(x => x.artifact === req.params.type);
   const next = STAGES[Math.min(idx + 1, STAGES.length - 1)]?.id || "writing";
   run("UPDATE projects SET current_stage=@stage,updated_at=@time WHERE id=@id", { stage: next, time: now(), id: req.project.id });
-  res.json({ artifact: parseArtifact(get("SELECT * FROM artifacts WHERE id=@id", { id: artifact.id })), nextStage: next });
+  res.json({ artifact: parseArtifact(get("SELECT * FROM artifacts WHERE id=@id", { id: artifact.id })), nextStage: next, warning });
 });
 
 app.post("/api/projects/:id/generate/:stage", requireProject, async (req, res, next) => {

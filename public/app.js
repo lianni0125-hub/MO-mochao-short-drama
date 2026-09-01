@@ -7,6 +7,11 @@ const jobElapsedMs=job=>Number(job?.elapsed_ms||0)+(job?.status==="running"&&job
 const formatDuration=ms=>{const seconds=Math.max(0,Math.floor(Number(ms||0)/1000)),hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60),rest=seconds%60;return hours?`${hours}小时${minutes}分`:minutes?`${minutes}分${rest}秒`:`${rest}秒`};
 document.querySelectorAll('select[name="library"] option[value="market"]').forEach(option=>option.textContent="Market 平台趋势");
 document.querySelectorAll("[data-close-dialog]").forEach(button => button.addEventListener("click", () => button.closest("dialog")?.close()));
+document.addEventListener("click",event=>{
+  if(event.target?.id!=="approveCharacters")return;
+  const characters=collectCharacters(),hasExplicit=characters.some(item=>/(?:^|[男女])主角|男主|女主/.test(String(item.role||"")));
+  if(characters.length&&!hasExplicit)alert(`未检测到“主角/男主/女主”标识。\n\n后续将默认把03第一个人物“${characters[0].name||"未命名人物"}”视为主角。`);
+},true);
 let clearStoryMemoryProjectId=null;
 $("#clearStoryMemoryForm").onsubmit=async event=>{event.preventDefault();const projectId=clearStoryMemoryProjectId;if(!projectId||state.project?.id!==projectId)return $("#clearStoryMemoryDialog").close();const button=event.submitter,old=button.textContent;button.disabled=true;button.textContent="正在清空…";try{const result=await api(`/api/projects/${projectId}/story-memory`,{method:"DELETE",body:JSON.stringify({confirm:true})});$("#clearStoryMemoryDialog").close();clearStoryMemoryProjectId=null;await reload();toast(`故事状态已清空（${result.records||0}条记录）`)}catch(error){toast(error.message)}finally{button.disabled=false;button.textContent=old}};
 function chooseAutoRetryLimit(title,description){return new Promise(resolve=>{const dialog=$("#autoRetryDialog"),form=$("#autoRetryForm"),input=$("#autoRetryLimit");$("#autoRetryTitle").textContent=title;$("#autoRetryDescription").textContent=description;input.value="5";let settled=false;const finish=value=>{if(settled)return;settled=true;dialog.removeEventListener("close",cancel);form.onsubmit=null;if(dialog.open)dialog.close();resolve(value)},cancel=()=>finish(null);dialog.addEventListener("close",cancel,{once:true});form.onsubmit=event=>{event.preventDefault();const value=Number(input.value);if(!Number.isSafeInteger(value)||value<0){input.setCustomValidity("请输入非负整数");input.reportValidity();input.setCustomValidity("");return}finish(value)};dialog.showModal();requestAnimationFrame(()=>{input.focus();input.select()})})}
@@ -32,7 +37,12 @@ function bindArtifact(type){
   if($("#approveArtifact")) $("#approveArtifact").onclick=async()=>{await api(`/api/projects/${state.project.id}/artifacts/${type}/approve`,{method:"POST",body:"{}"});await reload();toast("已批准，后续阶段已解锁")};
 }
 function renderStage(){
-  if(state.stage==="idea") return renderArtifactStage("idea","创意孵化","诊断 Seed 缺口，按需参考市场与现实资料，与 AI 共同敲定可支撑全剧的创意。");
+  if(state.stage==="idea"){
+    renderArtifactStage("idea","创意孵化","诊断 Seed 缺口，按需参考市场与现实资料，与 AI 共同敲定可支撑全剧的创意。");
+    const current=artifact("idea"),editor=$("#artifactEditor");
+    if(current&&editor){const {source_digest,...visible}=current.content||{};editor.value=JSON.stringify(visible,null,2);}
+    return;
+  }
   if(state.stage==="planning") return renderPlanning();
   if(state.stage==="characters") return renderCharacters();
   if(state.stage==="constraints") return renderCardsAndConstraintsV4();

@@ -1,3 +1,5 @@
+import { resolveProtagonist } from "./domain.js";
+
 const shared = `你是中国微短剧项目的专业策划与编剧。严格服从已锁定的硬约束，不擅自改变集数、卡点、人物关系、秘密揭露顺序和结局。输出必须是可执行的专业创作材料，避免空泛评价。`;
 
 const shortDramaEngine = `以下是不可被默认模板或用户模板覆盖的内置短剧叙事引擎：
@@ -24,6 +26,11 @@ ${stage==="outline"?"05负责发明并锁定上述神剧情。重要虐点应明
 小程序风只放宽现实尺度、生理恢复与人物情感理性，不放宽姓名、身份、首登场集、人物知情、金手指持有者、秘密揭露顺序、道具归属、必须发生链条和集尾钩子的连续性。当前情绪强度只决定对白、羞辱、压迫与反扑的表达密度：选择“强烈”也不得削弱05既定的离谱事件，选择“异常强烈”也不得越过05临时新增重大伤害。`:"";
 
 const stageOrder = ["idea", "planning", "characters", "cards", "outline"];
+const seedForStage=(stage,project)=>{
+  const seed=String(project?.seed||"").trim();
+  if(stage!=="outline")return seed;
+  return (seed.match(/[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/g)||[]).length<200?seed:"";
+};
 const writingCharacters=artifacts=>(artifacts.find(x=>x.type==="characters")?.content?.characters||[]).map(({role,name,age,personality})=>({role:role||"",name:name||"",age:age||"",personality:personality||""}));
 const novelContextText=value=>String(value??"").replace(/[“"]([^”"\n]+)[”"]/g,"「$1」").replace(/[（）()]/g,"").trim();
 const numberedRequiredPlot=value=>{
@@ -65,6 +72,10 @@ function context(stage, project, constraints, artifacts, evidence = [], range = 
     : artifacts.filter(artifact => stageOrder.indexOf(artifact.type) < stageIndex);
   const compact = artifact => {
     if(artifact.type==="control_settings")return {type:"control_settings",content:{card_points:artifact.content?.card_points||"未指定"}};
+    if(artifact.type==="idea"&&!["episode","quality","state_update"].includes(stage)){
+      const {source_digest,...visibleIdea}=artifact.content||{};
+      return {type:"idea",content:visibleIdea};
+    }
     if(!["episode","quality","state_update"].includes(stage))return {type:artifact.type,content:artifact.content};
     if(artifact.type==="idea")return {type:"idea",content:{core_hook:artifact.content?.core_hook,protagonist_goal:artifact.content?.protagonist_goal,approved_idea:artifact.content?.approved_idea}};
     if(artifact.type==="characters")return {type:"characters",content:{characters:(artifact.content?.characters||[]).map(c=>({role:c.role,name:c.name,age:c.age,personality:c.personality,biography:c.biography}))}};
@@ -72,7 +83,7 @@ function context(stage, project, constraints, artifacts, evidence = [], range = 
   };
   const effectiveHardConstraints=stage==="state_update"?[]:constraintsInRange(constraints,range);
   return JSON.stringify({
-    project: { title: project.title, tags: project.tags, totalEpisodes: project.total_episodes, audience: project.audience, platform: project.platform, restrictions: project.restrictions, seed: project.seed, storyMode:project.story_mode||"normal", ...(["episode","quality"].includes(stage)?{emotionIntensity:project.emotion_intensity||"strong"}:{}) },
+    project: { title: project.title, tags: project.tags, totalEpisodes: project.total_episodes, audience: project.audience, platform: project.platform, restrictions: project.restrictions, seed: seedForStage(stage,project,artifacts), storyMode:project.story_mode||"normal", ...(["episode","quality"].includes(stage)?{emotionIntensity:project.emotion_intensity||"strong"}:{}) },
     hardConstraints: effectiveHardConstraints,
     approvedArtifacts: allowedArtifacts.filter(x => x.status === "approved").map(compact),
     ideaEvidence: evidence
@@ -128,13 +139,12 @@ ${storyModeRule(project,"outline")}
 
 现在只规划覆盖全剧的“因果坐标”，不要写详细分集梗概、对白、场次或必须发生。宏观材料必须先被翻译成可持续推进的戏剧资源：人物现实目标与软肋、对手可采取的施压手段、金手指成长边界、关键关系、秘密揭露顺序、卡点及结局。
 
-为EP01至EP${project.total_episodes}逐集给出：episode_no、phase、inherited_state、dramatic_task、state_change、ending_action、future_boundary、first_appearance_characters。
+为EP01至EP${project.total_episodes}逐集给出：episode_no、phase、inherited_state、dramatic_task、state_change、ending_action、future_boundary。
 - inherited_state：本集开场前已经成立且本集必须承接的局面，不写未来事实。
 - dramatic_task：本集唯一主要冲突及其现实利益，不写空泛“推进主线”。
 - state_change：本集结束时必须产生的新增变化，不能与开场相同。
 - ending_action：结尾具体发生的动作、证据、选择或危险，下一集能直接承接。
 - future_boundary：本集绝不能提前使用的后续秘密、人物认知、打脸或结果。
-- first_appearance_characters：只列03主要人物中在该集第一次真正进入现场并参与行动或对白的人物姓名；多人用中文分号连接，没有则写“无”。必须为每名主要人物确定且只确定一次首登场集，未到该集不得让其提前进入现场；仅被别人提及不算出场。
 
 全剧必须形成连续因果：上一集ending_action直接制约下一集inherited_state；已经完成的事情不得重复执行；秘密、能力、关系、道具、地点和人物认知不得无因跳变。EP01长抑短扬，EP02起开场兑现上一集钩子后进入新压制，阶段卡点和结局严格服从已批准材料。只返回JSON。`;
 }
@@ -159,7 +169,7 @@ ${JSON.stringify(previousFinal,null,2)}
 【下一窗口边界｜只用于留戏，不得提前兑现】
 ${JSON.stringify(nextSpine,null,2)}
 
-每集返回episode_no、title、dramatic_design、summary、hook、purpose、start_state、end_state、rhythm、emotion、card_relation、first_appearance_characters。first_appearance_characters必须逐字照搬当前全剧因果坐标，不得增删或移集。
+每集返回episode_no、title、dramatic_design、summary、hook、purpose、start_state、end_state、rhythm、emotion、card_relation、first_appearance_characters。first_appearance_characters统一写“无”，最终梗概完成后由程序根据人物实际参与事件的最早位置回填。
 
 dramatic_design必须依次写清：开场即发生的危机；人物初始位置与现实目标；对手基于利益抓住什么软肋并采取什么具体施压行为；人物怎样应对；压力怎样升级并造成钱、机会、证据、关系、身体安全或行动空间上的可见后果；人物被迫作出什么选择；转机或爽点如何出现；怎样停在具体钩子。不要用“发生争执、遭到刁难、矛盾升级、主角反击”等栏目式概括代替事件。
 
@@ -188,7 +198,7 @@ ${storyModeRule(project,"outline")}
 
 同时检查创作元数据是否泄漏进故事世界：梗概的编辑叙述可以使用EP编号和“第X集”，但角色台词、日记、信件、纸条、短信、录音、广播、弹幕、系统提示、预言及其他故事内载体不得引用本作品的集数，也不得因此无依据预知未来。发现后保留既定事件，只删除集数感知；有世界内证据时改写为具体日期、约定、证据或威胁，没有依据则删除该预知，严禁只把“第三集”换成“不久后”。
 
-每集只返回episode_no、title、summary、hook、purpose、start_state、end_state、required_plot、must_reveal、must_not_reveal、rhythm、emotion、card_relation、first_appearance_characters。first_appearance_characters必须逐字照搬当前全剧因果坐标，不得增删或移集。
+每集只返回episode_no、title、summary、hook、purpose、start_state、end_state、required_plot、must_reveal、must_not_reveal、rhythm、emotion、card_relation、first_appearance_characters。first_appearance_characters统一写“无”，最终由程序根据完整梗概回填。
 required_plot必须从已经核准的summary与hook中提炼4–7个不可遗漏的可表演事件节点，用“→”连接。节点写具体人物行动及可见变化，不写静态身份、分析标签或空泛任务；最后节点就是hook。EP02起首节点必须直接兑现上一集hook并写出可见结果，不能停在准备动作。
 must_not_reveal只写当前窗口明确留到后续的具体信息；没有则写“无”，多项用中文分号连接。summary保持一小段连贯叙述，不把字段分析写进页面。只返回JSON。`;
 }
@@ -534,7 +544,7 @@ ${novelStateText(states)}
 export function buildSkillEpisodePrompt(project, constraints, artifacts, episode, states, templateGuide, continuity = {}) {
   const base="你是中国微短剧的专业剧本编剧。严格按照已确认的小说与剧情安排转换，不重新设计剧情。";
   const characters=writingCharacters(artifacts);
-  const protagonist=characters.find(item=>/(?:^|[男女])主角|男主|女主/.test(String(item.role||"")))?.name||"主角";
+  const protagonist=resolveProtagonist(characters).name||"主角";
   const intensity=(project.emotion_intensity||"strong")==="extreme"
     ? "异常强烈：下沉短剧式高压表达；忠实保留小说中反派主动施害的目的、阴险手段和现实后果，把威胁条件与所抓软肋落实为可拍行为和诛心对白。被揭穿后的否认、甩锅、灭证、威胁或反扑不得软化；反击必须让对手失去具体利益、脸面、地位或关系。"
     : "强烈：忠实保留小说中对手基于利益采取的现实阻碍、给主角造成的可见影响，以及其在炫耀、辩解、命令、自证或合理化中自然暴露自身的对白。不得把具体行为缩成口头争吵，也不得擅自让主角提前拆穿；反击时机服从既定事件链，反击造成清晰可见的局势变化。";

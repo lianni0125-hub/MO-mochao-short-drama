@@ -144,6 +144,8 @@
 @media(max-width:900px) { .planning-grid,.control-grid,.card-point-form,.unified-constraint-form,.emotion-control { grid-template-columns:1fr; } .planning-grid label.wide { grid-column:auto; } .panel-action-stack { grid-template-columns:repeat(3,max-content); justify-content:start; } }
 
 /* Project recycle bin */
+.sidebar .project-list { flex:1 1 auto; min-width:0; min-height:0; align-content:start; overflow-x:auto; overflow-y:auto; }
+.sidebar .project-list::-webkit-scrollbar { width:6px; height:0; }
 .project-item { position:relative; padding:0; }
 .project-select { display:block; width:100%; border:0; background:transparent; color:inherit; text-align:left; padding:11px 32px 11px 10px; cursor:pointer; }
 .delete-project { position:absolute; right:7px; top:6px; width:24px; height:24px; padding:0; border:0; border-radius:50%; background:transparent; color:#e36b5d; font-size:18px; line-height:24px; opacity:0; cursor:pointer; }

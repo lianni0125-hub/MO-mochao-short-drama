@@ -1,5 +1,5 @@
 import { all, detachLegacyStoryStateFromControls, get, run, now, transaction } from "./db.js";
-import { ARTIFACT_TITLES, canonicalRelationshipSubject, parseArtifact, parseProject } from "./domain.js";
+import { ARTIFACT_TITLES, canonicalRelationshipSubject, parseArtifact, parseProject, resolveProtagonist } from "./domain.js";
 import { buildEpisodeArrangementPrompt, buildEpisodeBoundariesPrompt, buildEpisodeBoundaryPrompt, buildEpisodeNovelPrompt, buildPreviousNovelSummaryPrompt, buildSkillEpisodePrompt, buildPlanningSectionPrompt, buildStagePrompt, buildOutlineSpinePrompt, buildOutlineDramaticBatchPrompt, buildOutlineFinalizePrompt } from "./prompts.js";
 import { generate } from "./llm.js";
 import { searchIdeaKnowledge } from "./knowledge.js";
@@ -35,8 +35,19 @@ const outlineText=(value,separator="")=>{
 };
 const normalizeOutlineEpisode=ep=>({...ep,episode_no:Number(ep?.episode_no),title:outlineText(ep?.title),summary:outlineText(ep?.summary,"\n"),scene_treatment:outlineText(ep?.scene_treatment,"\n"),hook:outlineText(ep?.hook,"\n"),purpose:outlineText(ep?.purpose,"；"),start_state:outlineText(ep?.start_state,"；"),end_state:outlineText(ep?.end_state,"；"),required_plot:outlineText(ep?.required_plot,"→"),must_reveal:outlineText(ep?.must_reveal,"；"),must_not_reveal:outlineText(ep?.must_not_reveal,"；")||"无",rhythm:outlineText(ep?.rhythm,"→"),emotion:outlineText(ep?.emotion,"→"),card_relation:outlineText(ep?.card_relation,"；"),first_appearance_characters:outlineText(ep?.first_appearance_characters,"；")||"无"});
 const appearanceNames=value=>[...new Set(String(value||"").split(/[；;、,，\n]+/).map(item=>item.trim()).filter(item=>item&&!/^(?:无|暂无|没有)$/.test(item)))];
-const obviousPlannedAppearance=(value,name)=>new RegExp(`${String(name).replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}.{0,16}(?:进入|来到|出现|赶到|走进|冲进|拦住|抓住|推开|质问|命令|邀请|威胁|攻击|救下|带走|开口|说|问|喊)`).test(String(value||""));
 const appearanceMap=episodes=>{const map=new Map();for(const ep of episodes||[])for(const name of appearanceNames(ep.first_appearance_characters))if(!map.has(name))map.set(name,Number(ep.episode_no));return map;};
+const deriveFirstAppearances=(episodes,characters,lockedThrough=0)=>{
+  const list=(episodes||[]).sort((a,b)=>Number(a.episode_no)-Number(b.episode_no)),names=(characters||[]).map(item=>String(item.name||"").trim()).filter(Boolean),assigned=new Map();
+  for(const ep of list.filter(item=>Number(item.episode_no)<=Number(lockedThrough)))for(const name of appearanceNames(ep.first_appearance_characters))if(names.includes(name)&&!assigned.has(name))assigned.set(name,Number(ep.episode_no));
+  const activeVerbs="出现|登场|来到|进入|走进|冲进|赶到|抵达|站在|坐在|跪在|躺在|抓住|拦住|推开|质问|开口|说|问|回答|命令|威胁|攻击|殴打|踹|救下|带走|联系|拨通|接通|递给|拿出|签下|拒绝|答应|绑架|见到|找到|面对|跟随|阻止|帮助|交给";
+  for(const name of names.filter(item=>!assigned.has(item))){
+    const escaped=name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),active=new RegExp(`(?:${escaped}.{0,18}(?:${activeVerbs})|(?:${activeVerbs}).{0,12}${escaped})`),mentionOnly=new RegExp(`(?:提到|提及|听说|得知|获知|谈起|回忆|想起|调查|查询|关于).{0,8}${escaped}|${escaped}.{0,5}(?:的照片|的档案|的资料|的名字|的传闻)`);
+    for(const ep of list){const text=[ep.summary,ep.hook,ep.required_plot].join("\n"),index=text.indexOf(name);if(index<0)continue;const window=text.slice(Math.max(0,index-24),index+name.length+32);if(active.test(window)&&!mentionOnly.test(window)){assigned.set(name,Number(ep.episode_no));break;}}
+  }
+  if(names[0]&&!assigned.has(names[0])&&list.length)assigned.set(names[0],Number(list[0].episode_no));
+  const byEpisode=new Map();for(const [name,no] of assigned){if(!byEpisode.has(no))byEpisode.set(no,[]);byEpisode.get(no).push(name);}for(const ep of list)ep.first_appearance_characters=(byEpisode.get(Number(ep.episode_no))||[]).join("；")||"无";
+  return list;
+};
 const outlineStoryWorldEpisodeLeak=value=>{
   const text=String(value||"");if(!text)return "";
   const episodeMeta=/(?:EP\s*0*\d+|第[零〇一二三四五六七八九十百两\d]+集|本集|这一集|上(?:一)?集|下(?:一)?集)/i;
@@ -208,23 +219,22 @@ async function runOutlineBatched(job,project){
   const episodeListSchema={type:"object",properties:{episodes:{type:"array",items:openEpisodeSchema}},required:["episodes"],additionalProperties:false};
   const checkpoint={...(job.checkpoint||{})};let spine=Array.isArray(checkpoint.spine)?checkpoint.spine:[],generated=Array.isArray(checkpoint.generated)?checkpoint.generated.map(normalizeOutlineEpisode):[];
   run("UPDATE jobs SET total=@total,message=@message WHERE id=@id",{total:1+batchCount*2,message:spine.length?`正在从 EP${String(Number(checkpoint.next_batch||0)*batchSize+1).padStart(2,"0")} 继续生成分集梗概`:`正在建立 ${totalEpisodes} 集全剧因果骨架`,id:job.id});
-  if(!spine.length){
-    const baseSpinePrompt=buildOutlineSpinePrompt(project,constraints,artifacts),spinePrompt=preserved.length?`${baseSpinePrompt}\n\n【已锁定且绝对不可改写的 EP01–EP${String(preservedEnd).padStart(2,"0")}】\n${JSON.stringify(preserved,null,2)}\n\n重新建立全剧因果骨架时，前述已锁定分集只作为既定前史；EP${String(requestedStart).padStart(2,"0")}–EP${String(totalEpisodes).padStart(2,"0")} 必须承接它们继续发展。仍按原格式返回 EP01–EP${String(totalEpisodes).padStart(2,"0")} 的骨架，但后续正式分集生成只会从 EP${String(requestedStart).padStart(2,"0")} 开始，严禁篡改或重新设计已锁定集。`:baseSpinePrompt;
-    const mainNames=(artifacts.find(item=>item.type==="characters")?.content?.characters||[]).map(item=>String(item.name||"").trim()).filter(Boolean);let spineResult,spineIssues=[];
+  if(!checkpoint.spine_complete){
+    const basePrompt=buildOutlineSpinePrompt(project,constraints,artifacts),spinePrompt=preserved.length?`${basePrompt}\n\n【已锁定且绝对不可改写的 EP01–EP${String(preservedEnd).padStart(2,"0")}】\n${JSON.stringify(preserved,null,2)}\n\n前述分集只作为既定前史；后续必须承接它们继续发展。仍一次返回 EP01–EP${String(totalEpisodes).padStart(2,"0")} 的完整因果骨架，后续正式分集生成只从 EP${String(requestedStart).padStart(2,"0")} 开始。`:basePrompt;
+    let spineResult=null,spineIssues=[];
     for(let round=1;round<=20;round++){
-      const repairPrompt=round===1?spinePrompt:`${spinePrompt}\n\n【上一版骨架】\n${JSON.stringify(spine,null,2)}\n\n【定向修订】\n${spineIssues.join("；")}。只修正 episode_no 与 first_appearance_characters 的完整性、合法姓名和唯一首登场位置，其余因果设计保持不变；重新返回完整骨架。`;
-      run("UPDATE jobs SET message=@message WHERE id=@id",{message:round===1?`正在建立 ${totalEpisodes} 集全剧因果骨架`:`首次出场规划未通过，正在定向修订（${round}/20）：${spineIssues.join("；")}`,id:job.id});
-      spineResult=await generate({stage:"outline_spine",project,prompt:repairPrompt,schema:episodeListSchema,extra:{start:1,end:totalEpisodes},signal:currentSignal()});
-      spine=(spineResult.output?.episodes||[]).filter(item=>Number(item.episode_no)>=1&&Number(item.episode_no)<=totalEpisodes).sort((a,b)=>a.episode_no-b.episode_no);spineIssues=[];
+      const prompt=round===1?spinePrompt:`${spinePrompt}\n\n【上一版骨架】\n${JSON.stringify(spine,null,2)}\n\n【定向修订】\n${spineIssues.join("；")}。保持已有因果设计，只补齐或修正集数，重新返回 EP01–EP${String(totalEpisodes).padStart(2,"0")} 的完整骨架。`;
+      run("UPDATE jobs SET message=@message WHERE id=@id",{message:round===1?`正在建立 ${totalEpisodes} 集全剧因果骨架`:`全剧因果骨架不完整，正在定向修订（${round}/20）：${spineIssues.join("；")}`,id:job.id});
+      spineResult=await generate({stage:"outline_spine",project,prompt,schema:episodeListSchema,extra:{start:1,end:totalEpisodes},signal:currentSignal()});
+      spine=(spineResult.output?.episodes||[]).filter(item=>Number(item.episode_no)>=1&&Number(item.episode_no)<=totalEpisodes).sort((a,b)=>Number(a.episode_no)-Number(b.episode_no));spineIssues=[];
       if(spine.length!==totalEpisodes)spineIssues.push(`应返回${totalEpisodes}集，实际${spine.length}集`);
       for(let i=0;i<spine.length;i++)if(Number(spine[i].episode_no)!==i+1)spineIssues.push(`缺少或重复EP${i+1}`);
-      const declared=spine.flatMap(ep=>appearanceNames(ep.first_appearance_characters)),unknown=[...new Set(declared.filter(name=>!mainNames.includes(name)))],duplicates=[...new Set(declared.filter((name,index)=>declared.indexOf(name)!==index))],missing=mainNames.filter(name=>!declared.includes(name));
-      if(unknown.length)spineIssues.push(`非03主要人物：${unknown.join("、")}`);if(duplicates.length)spineIssues.push(`重复标记：${duplicates.join("、")}`);if(missing.length)spineIssues.push(`尚未标记：${missing.join("、")}`);
       if(!spineIssues.length)break;
     }
-    if(spineIssues.length)throw new Error(`主要人物首次出场规划连续20轮仍不合格；${spineIssues.join("；")}`);
+    if(spineIssues.length)throw new Error(`全剧因果骨架连续20轮仍不完整：${spineIssues.join("；")}`);
+    for(const episode of spine)episode.first_appearance_characters="无";
     run("INSERT INTO generations(project_id,stage,provider,model,prompt,output,status,input_tokens,output_tokens) VALUES(@pid,'outline_spine',@provider,@model,@prompt,@output,'completed',@input,@out)",{pid:project.id,provider:spineResult.provider,model:spineResult.model,prompt:spinePrompt,output:JSON.stringify(spineResult.output),input:spineResult.usage.input_tokens||0,out:spineResult.usage.output_tokens||0});
-    checkpoint.spine=spine;checkpoint.generated=preserved;checkpoint.next_batch=Math.floor(preservedEnd/batchSize);run("UPDATE jobs SET checkpoint_json=@checkpoint,progress=@progress,message='全剧因果骨架已完成，开始分窗口设计戏剧梗概' WHERE id=@id",{checkpoint:JSON.stringify(checkpoint),progress:1+checkpoint.next_batch*2,id:job.id});
+    checkpoint.spine=spine;checkpoint.spine_complete=true;checkpoint.generated=preserved;checkpoint.next_batch=Math.floor(preservedEnd/batchSize);run("UPDATE jobs SET checkpoint_json=@checkpoint,progress=@progress,message='全剧因果骨架已完成，开始分窗口设计戏剧梗概' WHERE id=@id",{checkpoint:JSON.stringify(checkpoint),progress:1+checkpoint.next_batch*2,id:job.id});
   }
   for(let batch=Math.max(0,Number(checkpoint.next_batch||0));batch<batchCount;batch++){
     const start=batch*batchSize+1,end=Math.min(totalEpisodes,start+batchSize-1);
@@ -246,10 +256,6 @@ async function runOutlineBatched(job,project){
       if(episodes.length!==end-start+1)semanticIssues.push(`应返回${end-start+1}集，实际${episodes.length}集`);
       for(let i=0;i<episodes.length;i++){
         const expected=start+i;if(Number(episodes[i].episode_no)!==expected)semanticIssues.push(`缺少或重复EP${expected}`);
-        const spineEpisode=currentSpine.find(item=>Number(item.episode_no)===expected),plannedNames=appearanceNames(spineEpisode?.first_appearance_characters),returnedNames=appearanceNames(episodes[i].first_appearance_characters);
-        if(plannedNames.join("｜")!==returnedNames.join("｜"))semanticIssues.push(`EP${expected}首次出场人物必须照搬全剧坐标：${plannedNames.join("、")||"无"}`);
-        const episodeOutline=[episodes[i].summary,episodes[i].hook,episodes[i].required_plot].join("\n"),firstMap=appearanceMap(spine),premature=[...firstMap].filter(([,no])=>no>expected).map(([name])=>name).filter(name=>obviousPlannedAppearance(episodeOutline,name));
-        if(premature.length)semanticIssues.push(`EP${expected}让尚未到首登场集的人物提前进入梗概：${premature.join("、")}`);
         const nodes=String(episodes[i].required_plot||"").split(/→/).map(x=>x.trim()).filter(Boolean);
         if(nodes.length<4)semanticIssues.push(`EP${expected}必须发生至少需要4个事件节点，实际${nodes.length}个`);
         if(!String(episodes[i].summary||"").trim()||!String(episodes[i].hook||"").trim())semanticIssues.push(`EP${expected}梗概或钩子为空`);
@@ -263,8 +269,10 @@ async function runOutlineBatched(job,project){
     run("INSERT INTO generations(project_id,stage,provider,model,prompt,output,status,input_tokens,output_tokens) VALUES(@pid,'outline_finalize',@provider,@model,@prompt,@output,'completed',@input,@out)",{pid:project.id,provider:finalResult.provider,model:finalResult.model,prompt:finalPrompt,output:JSON.stringify(finalResult.output),input:finalResult.usage.input_tokens||0,out:finalResult.usage.output_tokens||0});
     checkpoint.spine=spine;checkpoint.generated=generated;checkpoint.next_batch=batch+1;run("UPDATE jobs SET progress=@progress,message=@message,checkpoint_json=@checkpoint WHERE id=@id",{progress:1+(batch+1)*2,message:`已完成 EP${String(start).padStart(2,"0")}–EP${String(end).padStart(2,"0")}（${batch+1}/${batchCount}）`,checkpoint:JSON.stringify(checkpoint),id:job.id});
   }
-  upsertArtifact(project.id,"outline",{episodes:generated});
-  return {episodes:generated.length,batches:batchCount};
+  const characters=artifacts.find(item=>item.type==="characters")?.content?.characters||[],derived=deriveFirstAppearances(generated,characters,preservedEnd);
+  for(const ep of derived)run("UPDATE episodes SET first_appearance_characters=@value,updated_at=@time WHERE project_id=@pid AND episode_no=@no",{value:ep.first_appearance_characters,time:now(),pid:project.id,no:ep.episode_no});
+  upsertArtifact(project.id,"outline",{episodes:derived});
+  return {episodes:derived.length,batches:batchCount};
 }
 const episodeContext=(project,episode)=>{
   const constraints=constraintsFor(project.id),artifacts=artifactsFor(project.id);
@@ -303,7 +311,7 @@ async function generateEpisodeNovel(project,episode){
   const characterCards=c.artifacts.find(item=>item.type==="characters")?.content?.characters||[];
   const appearance=characterAppearanceContext(project.id,episode.episode_no,characterCards);
   const novelPromptWithAppearances=buildEpisodeNovelPrompt(project,c.constraints,c.artifacts,episode,c.states,c.writingGuide,{previousNovelSummary,previousNovelEnding:c.previousNovelEnding,memory:c.memory,characterAppearancePlan:appearance.text});
-  const protagonistIdentifier=characterCards.find(item=>/(?:^|[男女])主角|男主|女主/.test(String(item.role||"")))?.name||"";
+  const protagonistIdentifier=resolveProtagonist(characterCards).name;
   const secondaryIdentifiers=all("SELECT canonical_name FROM memory_secondary_characters WHERE project_id=@pid AND active=1",{pid:project.id}).map(item=>item.canonical_name);
   const characterIdentifiers=[...new Set([...characterCards.map(item=>item.name),...secondaryIdentifiers].filter(Boolean))];
   const goldenKnowledgeEntries=all("SELECT canonical_name name,kind,owner FROM memory_golden_fingers WHERE project_id=@pid AND active=1",{pid:project.id});
@@ -333,7 +341,7 @@ async function generateEpisodeScript(project,episode){
   const minimumCharacters=1000;
   const characterCards=c.artifacts.find(item=>item.type==="characters")?.content?.characters||[];
   const appearance=characterAppearanceContext(project.id,episode.episode_no,characterCards);
-  const protagonistIdentifier=characterCards.find(item=>/(?:^|[男女])主角|男主|女主/.test(String(item.role||"")))?.name||"";
+  const protagonistIdentifier=resolveProtagonist(characterCards).name;
   const secondaryIdentifiers=all("SELECT canonical_name FROM memory_secondary_characters WHERE project_id=@pid AND active=1",{pid:project.id}).map(item=>item.canonical_name);
   const characterIdentifiers=[...new Set([...characterCards.map(item=>item.name),...secondaryIdentifiers].filter(Boolean))];
   const goldenKnowledgeEntries=all("SELECT canonical_name name,kind,owner FROM memory_golden_fingers WHERE project_id=@pid AND active=1",{pid:project.id});
