@@ -403,6 +403,15 @@ export async function generate({ stage, project, prompt, extra = {}, schema = nu
     const retryInstruction=attempt?(schema?(/timed out|timeout|超时/i.test(lastError?.message||"")?"上一次请求超时且没有取得可用输出。本次继续执行同一任务，保持范围不变，直接完整返回要求的 JSON。":"上一次输出无法解析。这一次请特别检查所有引号、逗号、数组和对象是否完整闭合。\n上一轮问题："+(lastError?.message||"未知")):repairInstruction(stage,lastError?.message,extra)):"";
     const messages=attempt&&typeof output==="string"&&output.trim()?(["episode_novel","episode"].includes(stage)?[{role:"user",content:compactRevisionPrompt(stage,output,retryInstruction,extra)}]:[{role:"user",content:prompt+jsonInstruction},{role:"assistant",content:output},{role:"user",content:retryInstruction}]):[{role:"user",content:prompt+jsonInstruction+(retryInstruction?`\n\n${retryInstruction}`:"")}];
     const request={model:provider.model,messages};
+    // DeepSeek V4 enables high-effort thinking by default. That is useful for
+    // reasoning, but it makes long-form generation slower and spends part of
+    // the completion budget before the visible answer. Mochao already has its
+    // own staged planning/validation pipeline, so use the stable non-thinking
+    // path for both prose and structured generation.
+    if(provider.id==="deepseek"){
+      request.thinking={type:"disabled"};
+      if(schema)request.response_format={type:"json_object"};
+    }
     if(["scene_treatment_text","episode_boundaries_text","episode_boundary_text"].includes(stage))request.temperature=0.4;
     if(stage==="character_image_prompt")request.temperature=0.35;
     if(["episode_plan_text","episode_arrangement"].includes(stage))request.temperature=0.5;
@@ -475,6 +484,18 @@ export async function testConnection({ providerId, apiKey, baseUrl, model }) {
   const client=new OpenAI({apiKey:provider.apiKey,baseURL:provider.baseUrl,timeout:20000,maxRetries:0});
   const started=Date.now();let reply="";
   if(provider.protocol==="responses"){const response=await client.responses.create({model:provider.model,input:"连接测试：只回复 OK",max_output_tokens:16});reply=response.output_text||"";}
-  else{const response=await client.chat.completions.create({model:provider.model,messages:[{role:"user",content:"连接测试：只回复 OK"}],stream:false});reply=response.choices?.[0]?.message?.content||"";}
+  else{
+    const request={model:provider.model,messages:[{role:"user",content:"连接测试：只回复 OK"}],stream:false};
+    if(provider.id==="deepseek"){
+      request.thinking={type:"disabled"};
+      request.response_format={type:"json_object"};
+      request.messages=[{role:"user",content:'连接与结构化输出测试：只返回 JSON 对象 {"status":"OK"}'}];
+    }
+    const response=await client.chat.completions.create(request);
+    reply=response.choices?.[0]?.message?.content||"";
+    if(provider.id==="deepseek"){
+      try{const parsed=JSON.parse(reply);reply=parsed.status||reply;}catch{throw new Error("DeepSeek 已连接，但未通过结构化输出测试");}
+    }
+  }
   return {ok:true,latencyMs:Date.now()-started,reply:String(reply).replace(/<think>[\s\S]*?<\/think>/gi,"").trim().slice(0,80)||"已收到空文本响应"};
 }
