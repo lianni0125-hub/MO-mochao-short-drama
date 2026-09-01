@@ -45,6 +45,8 @@ test("健康检查和完整创作主链", async () => {
   assert.equal(novelDescriptionIssues(`王志远端起茶杯：「这只算见面礼，你敢不敢跟我去市场走一趟，把剩下那批原石全看完，再替我把所有鉴定结果逐件写清楚？」`).length,1);
   assert.equal(novelDescriptionIssues(`王志远端起茶杯：「这只算见面礼，敢不敢跟我去市场？」`).length,0);
   assert.equal((await request("/api/health")).body.ok, true);
+  const iframeChild=await fetch(`${base}/vendor/iframeResizer.contentWindow.min.js`);assert.equal(iframeChild.status,200);assert.match(await iframeChild.text(),/iFrameResizer/);
+  const home=await fetch(`${base}/`);assert.match(await home.text(),/iframeResizer\.contentWindow\.min\.js/);
   const connection=await request("/api/settings/llm/test",{method:"POST",body:JSON.stringify({provider:"mock"})});assert.equal(connection.body.ok,true);
   const embeddingConnection=await request("/api/settings/embedding/test",{method:"POST",body:JSON.stringify({provider:"mock"})});assert.equal(embeddingConnection.body.ok,true);assert.ok(embeddingConnection.body.dimensions>0);
   const created=await request("/api/projects",{method:"POST",body:JSON.stringify({title:"测试短剧",total_episodes:6,tags:["悬疑"],seed:"失忆的女主每天收到未来的短信"})});

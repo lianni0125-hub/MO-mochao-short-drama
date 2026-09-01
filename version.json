@@ -1,13 +1,11 @@
 {
-  "version": "1.2.8",
-  "title": "Windows 便携版与双通道自动更新",
-  "publishedAt": "2026-08-30",
+  "version": "1.2.9",
+  "title": "AutoDL APP 内嵌兼容",
+  "publishedAt": "2026-09-01",
   "notes": [
-    "GitHub Releases 新增 Windows 免安装便携包，解压后可双击启动",
-    "自动识别 Git 安装版与 Windows 便携版，并分别使用 Git 或 Release 安全更新",
-    "便携版更新前校验 SHA-256、建立恢复点，并永久保护 data 与 .env",
-    "新增标签发布工作流，可自动构建并上传便携包及校验文件"
+    "新增 AutoDL Art APP 所需的 iframe-resizer 子页面握手支持",
+    "墨潮独立运行方式与现有创作、数据和任务流程保持不变"
   ],
-  "portableAsset": "MO-mochao-Windows-v1.2.8.zip",
+  "portableAsset": "MO-mochao-Windows-v1.2.9.zip",
   "url": "https://github.com/lianni0125-hub/MO-mochao-short-drama"
 }

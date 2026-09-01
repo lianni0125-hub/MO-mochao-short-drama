@@ -595,6 +595,9 @@ app.post("/api/projects/:id/export", requireProject, async (req, res, next) => {
   const output=await exportProjectDocx(req.project,artifactsFor(req.project.id),episodes,all("SELECT * FROM character_images WHERE project_id=@id",{id:req.project.id}),{type,novelBracketsToQuotes:type==="novel"&&req.body?.novel_brackets_to_quotes===true});res.json({filename:output.filename,url:`/exports/${encodeURIComponent(output.filename)}`,episodes:episodes.map(x=>x.episode_no),type});
 } catch(error){next(error);} });
 app.use("/exports", express.static(config.exportsDir));
+app.get("/vendor/iframeResizer.contentWindow.min.js", (_req, res) =>
+  res.sendFile(path.join(config.root, "node_modules", "iframe-resizer", "js", "iframeResizer.contentWindow.min.js"))
+);
 app.use(express.static(config.publicDir));
 app.get("/{*splat}", (_req, res) => res.sendFile(path.join(config.publicDir, "index.html")));
 app.use((error, _req, res, _next) => { console.error(error); res.status(500).json({ error: error.message || "服务器错误" }); });
