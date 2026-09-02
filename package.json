@@ -1,6 +1,6 @@
 {
   "name": "ai-short-drama-writer",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "private": true,
   "type": "module",
   "description": "本地优先的 AI 短剧自动编剧工作台",

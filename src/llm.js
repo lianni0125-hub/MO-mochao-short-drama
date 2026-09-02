@@ -99,6 +99,19 @@ function plannedCompositeScenes(value){
   return [...groups.values()].filter(group=>group.composite&&group.locations.length>1);
 }
 
+const representationContext=(text,name,index=String(text||"").indexOf(String(name||"")))=>{
+  const source=String(text||""),target=String(name||"");if(index<0||!target)return false;
+  const window=source.slice(Math.max(0,index-32),index+target.length+42);
+  if(/(?:视频通话|实时连线|正在直播|直播连线|电话那头|正在通话)/.test(window))return false;
+  const escaped=target.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+  return new RegExp(`(?:照片|相片|画像|遗像|海报|档案|资料|录像|录音|监控|新闻|报道|回忆|记忆|梦境|梦里|闪回|过去)(?:中|里|上|中的|里的)?.{0,22}${escaped}|${escaped}.{0,10}(?:的照片|的画像|的录像|的录音|出现在屏幕|出现在回忆)`).test(window);
+};
+
+const prematureNovelAppearance=(text,names=[])=>(names||[]).find(name=>{
+  const escaped=String(name).replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),pattern=new RegExp(`${escaped}(?:[^\n「」]{0,16}：「|[^\n，。！？；]{0,10}(?:走|跑|冲|站|坐|跪|推|拉|抓|抬|看|盯|笑|问|喊|说|开口|出现|进来|离开))`,"g");
+  return [...String(text||"").matchAll(pattern)].some(match=>!representationContext(text,name,match.index));
+});
+
 function episodePerformanceIssues(text,extra={}){
   const scenePattern=/^\d+\s+(?:内\/外|外\/内|内景?|外景?)\s+.+/,lines=String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean),sceneLines=lines.filter(line=>scenePattern.test(line));
   const actionLines=lines.filter(line=>!/^EP\s*\d+/i.test(line)&&!scenePattern.test(line)&&!/^.{1,30}(?:\s+V\.O\.|\s+OS)?\s*：/.test(line));
@@ -107,7 +120,7 @@ function episodePerformanceIssues(text,extra={}){
   const silentEpisode=/(?:全程无声|不能出声|禁止说话|不得说话|无台词)/.test([extra.episode?.summary,extra.episode?.required_plot,extra.episode?.must_not_reveal].filter(Boolean).join("\n"));
   const spokenLines=lines.filter(line=>/^[^：\n]{1,30}(?:\s+V\.O\.|\s+OS)?：\S+/.test(line));
   if(!silentEpisode&&!spokenLines.length)issues.push("整集没有任何台词或主角V.O.；单人场景也必须用有行动目的的外说、自言自语或必要主角V.O.形成语言节奏，不得凭空新增人物、电话、广播、系统激活或未知事实");
-  const premature=(extra.forbiddenAppearanceCharacters||[]).find(name=>{const escaped=String(name).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");return lines.some(line=>new RegExp(`^${escaped}(?:\s+(?:V\\.O\\.|OS))?：|^${escaped}.{0,12}(?:走|跑|冲|站|坐|跪|推|拉|抓|抬|看|盯|笑|问|喊|说|开口|出现|进来|离开)`).test(line));});
+  const premature=(extra.forbiddenAppearanceCharacters||[]).find(name=>{const escaped=String(name).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");let representedScene=false;return lines.some(line=>{if(scenePattern.test(line)){representedScene=/(?:回忆|闪回|梦境|梦里|过去|照片|录像|监控)/.test(line);return false;}if(representedScene||representationContext(line,name))return false;return new RegExp(`^${escaped}(?:\\s+(?:V\\.O\\.|OS))?：|^${escaped}.{0,12}(?:走|跑|冲|站|坐|跪|推|拉|抓|抬|看|盯|笑|问|喊|说|开口|出现|进来|离开)`).test(line);});});
   if(premature)issues.push(`主要人物“${premature}”尚未到规划的首次出场集，却已在本集现场行动或说话`);
   if(/[（）()]/.test(String(text)))issues.push("出现任何圆括号或小括号");
   if(extra.sourceNarrativePerson==="third"){const quotedDialogue=lines.find(line=>/[「」“”]/.test(line));if(quotedDialogue)issues.push(`排版未正确换行，残留第三人称小说的对白引号或嵌入式对白：“${quotedDialogue.slice(0,100)}”；识别实际说话人，去掉引号，拆成独立动作行与“人物：台词”行`);}
@@ -242,7 +255,7 @@ function validatePlainOutput(stage,output,extra={}){
     if(labelledSpeech>=5)return `小说反复使用了刻板的“说/问：台词”格式（共 ${labelledSpeech} 处）`;
     const descriptionIssues=novelDescriptionIssues(text);if(descriptionIssues.length)return `小说段落超过40个汉字：${descriptionIssues.slice(0,12).map(item=>`第${item.paragraph}段${item.count}字“${item.text.slice(0,55)}”`).join("；")}`;
     const knowledgeIssue=unauthorizedGoldenKnowledgeIssue(text,extra,stage);if(knowledgeIssue)return knowledgeIssue;
-    const escapeRegex=value=>String(value).replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),premature=(extra.forbiddenAppearanceCharacters||[]).find(name=>new RegExp(`${escapeRegex(name)}(?:[^\n「」]{0,16}：「|[^\n，。！？；]{0,10}(?:走|跑|冲|站|坐|跪|推|拉|抓|抬|看|盯|笑|问|喊|说|开口|出现|进来|离开))`).test(text));
+    const premature=prematureNovelAppearance(text,extra.forbiddenAppearanceCharacters||[]);
     if(premature)return `主要人物“${premature}”尚未到规划的首次出场集，却已在本集现场行动或说话`;
   }
   if(stage==="episode_novel_summary"){
