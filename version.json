@@ -1,13 +1,14 @@
 {
-  "version": "1.3.5",
-  "title": "主要人物首次出场判定优化",
-  "publishedAt": "2026-09-02",
+  "version": "1.3.6",
+  "title": "商汤多模型接入与主角锁定优化",
+  "publishedAt": "2026-09-03",
   "notes": [
-    "分集梗概完成后使用纯程序逻辑瞬时回填主要人物首次正式出场，不再额外调用文本或向量 API",
-    "支持从人设中识别乳名、原名、艺名、化名、别名和安全简称，避免人物因称呼变化而漏判",
-    "照片、档案、纸条、录音录像、新闻、梦境、回忆和单纯提及不再误算正式出场，实时通话和主动介入仍算出场",
-    "06小说与剧本验收同步识别提前出场，并给出定向修订意见"
+    "商汤日日新新增 DeepSeek V4 Flash、DeepSeek V4 Pro、GLM-5.2 与 Kimi K3 四种可选模型",
+    "商汤默认模型调整为 DeepSeek V4 Flash，并兼容旧版轻量模型配置迁移",
+    "通过商汤调用 DeepSeek 时同步启用结构化输出与非思考模式兼容逻辑",
+    "保存文本模型设置后不再关闭窗口，便于继续测试与切换接口",
+    "06小说和剧本明确锁定主角姓名与初始身份，避免长流程中视角或主角错位"
   ],
-  "portableAsset": "MO-mochao-Windows-v1.3.5.zip",
+  "portableAsset": "MO-mochao-Windows-v1.3.6.zip",
   "url": "https://github.com/lianni0125-hub/MO-mochao-short-drama"
 }

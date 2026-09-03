@@ -367,6 +367,9 @@ export function buildEpisodePrompt(project, constraints, artifacts, episode, sta
 
 export function buildEpisodeNovelPrompt(project, constraints, artifacts, episode, states, templateGuide, continuity = {}) {
   const characters=writingCharacters(artifacts);
+  const protagonistCard=characters.find(item=>item.name===resolveProtagonist(characters).name)||characters[0]||{};
+  const protagonist=String(protagonistCard.name||"").trim()||"主角";
+  const protagonistIdentity=String(protagonistCard.role||"").trim()||"身份未明确";
   const planning=artifacts.find(item=>item.type==="planning")?.content||{};
   const narrativePerson=project.narrative_person==="third"?"third":"first";
   const narrativePersonRule=narrativePerson==="third"
@@ -390,7 +393,9 @@ ${hardConstraintText(constraints,{start:Number(episode?.episode_no),end:Number(e
 综合【本集大概内容】【必须发生】【不得揭示】【人设】写一篇本集小说中间稿。小说是设计具体剧情的中间产物，要把事件动机、因果、情绪、能力触发和对手反应彻底想顺，为下一步转写剧本服务。其中【本集大概内容】负责说明本集意图、人物动机、因果背景和信息来源；【必须发生】负责锁定可执行事件及其先后顺序；两者不是两套并列剧情。【必须发生】最后一个节点已经是本集唯一钩子，小说不再读取或另写第二份钩子。
 
 【叙事人称｜全局最高优先级】
+锁定主角：${protagonist}｜${protagonistIdentity}
 ${narrativePersonRule}
+全文的视角、内心、核心选择与第一人称“我”均只能归属于上述锁定主角，不得因其他人物戏份较多而更换主角。
 从第一段到最后一段保持同一人称。此规则高于模板格式、样例、扩写要求和定向修订要求；任何材料若暗示另一种人称，只学习其剧情信息，不得跟随其人称。
 
 【短段表达规则｜不得削减剧情】
@@ -544,7 +549,9 @@ ${novelStateText(states)}
 export function buildSkillEpisodePrompt(project, constraints, artifacts, episode, states, templateGuide, continuity = {}) {
   const base="你是中国微短剧的专业剧本编剧。严格按照已确认的小说与剧情安排转换，不重新设计剧情。";
   const characters=writingCharacters(artifacts);
-  const protagonist=resolveProtagonist(characters).name||"主角";
+  const protagonistCard=characters.find(item=>item.name===resolveProtagonist(characters).name)||characters[0]||{};
+  const protagonist=String(protagonistCard.name||"").trim()||"主角";
+  const protagonistIdentity=String(protagonistCard.role||"").trim()||"身份未明确";
   const intensity=(project.emotion_intensity||"strong")==="extreme"
     ? "异常强烈：下沉短剧式高压表达；忠实保留小说中反派主动施害的目的、阴险手段和现实后果，把威胁条件与所抓软肋落实为可拍行为和诛心对白。被揭穿后的否认、甩锅、灭证、威胁或反扑不得软化；反击必须让对手失去具体利益、脸面、地位或关系。"
     : "强烈：忠实保留小说中对手基于利益采取的现实阻碍、给主角造成的可见影响，以及其在炫耀、辩解、命令、自证或合理化中自然暴露自身的对白。不得把具体行为缩成口头争吵，也不得擅自让主角提前拆穿；反击时机服从既定事件链，反击造成清晰可见的局势变化。";
@@ -557,6 +564,10 @@ export function buildSkillEpisodePrompt(project, constraints, artifacts, episode
 ${storyModeRule(project,"writing")}
 
 任务：把已经完成的小说中间稿转换为可直接拍摄的微短剧剧本。小说已经完成剧情设计，不得另写剧情、调换事件、替换钩子或参考本集旧稿。
+
+【锁定主角｜全局最高优先级】
+${protagonist}｜${protagonistIdentity}
+剧本的主角身份不得因其他人物戏份较多而改变；只有上述锁定主角可以承接小说视角与必要的 V.O.。
 
 情绪强度：${intensity}
 必须发生：${episode?.required_plot||""}

@@ -374,6 +374,8 @@ function mock(stage, project, extra = {}) {
   return {};
 }
 
+const isDeepSeekModel=provider=>provider.id==="deepseek"||/^deepseek-v4-(?:flash|pro)$/i.test(String(provider.model||""));
+
 export async function generate({ stage, project, prompt, extra = {}, schema = null, signal = null, onAttempt = null }) {
   if(["episode_novel","episode"].includes(stage)){
     const guide=templateWritingGuide(templateContext(project));
@@ -421,7 +423,7 @@ export async function generate({ stage, project, prompt, extra = {}, schema = nu
     // the completion budget before the visible answer. Mochao already has its
     // own staged planning/validation pipeline, so use the stable non-thinking
     // path for both prose and structured generation.
-    if(provider.id==="deepseek"){
+    if(isDeepSeekModel(provider)){
       request.thinking={type:"disabled"};
       if(schema)request.response_format={type:"json_object"};
     }
@@ -499,14 +501,14 @@ export async function testConnection({ providerId, apiKey, baseUrl, model }) {
   if(provider.protocol==="responses"){const response=await client.responses.create({model:provider.model,input:"连接测试：只回复 OK",max_output_tokens:16});reply=response.output_text||"";}
   else{
     const request={model:provider.model,messages:[{role:"user",content:"连接测试：只回复 OK"}],stream:false};
-    if(provider.id==="deepseek"){
+    if(isDeepSeekModel(provider)){
       request.thinking={type:"disabled"};
       request.response_format={type:"json_object"};
       request.messages=[{role:"user",content:'连接与结构化输出测试：只返回 JSON 对象 {"status":"OK"}'}];
     }
     const response=await client.chat.completions.create(request);
     reply=response.choices?.[0]?.message?.content||"";
-    if(provider.id==="deepseek"){
+    if(isDeepSeekModel(provider)){
       try{const parsed=JSON.parse(reply);reply=parsed.status||reply;}catch{throw new Error("DeepSeek 已连接，但未通过结构化输出测试");}
     }
   }

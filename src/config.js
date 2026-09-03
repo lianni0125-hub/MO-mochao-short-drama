@@ -14,7 +14,9 @@ export const config = {
   port: Number(process.env.PORT || 6008),
   host: process.env.HOST || "0.0.0.0",
   llmProvider: process.env.LLM_PROVIDER || (process.env.OPENAI_API_KEY ? "openai" : "mock"),
-  openaiModel: process.env.OPENAI_MODEL || "gpt-5.4-mini",
+  openaiModel: process.env.LLM_PROVIDER === "sensenova" && process.env.OPENAI_MODEL === "sensenova-6.8-flash-lite"
+    ? "deepseek-v4-flash"
+    : process.env.OPENAI_MODEL || "gpt-5.4-mini",
   baseUrl: process.env.LLM_BASE_URL || "",
   embeddingProvider: process.env.EMBEDDING_PROVIDER || "custom",
   embeddingBaseUrl: process.env.EMBEDDING_BASE_URL || "",
@@ -38,6 +40,7 @@ export const config = {
     qwen: process.env.DASHSCOPE_API_KEY || "",
     moonshot: process.env.MOONSHOT_API_KEY || "",
     baidu: process.env.BAIDU_QIANFAN_API_KEY || "",
+    sensenova: process.env.SENSENOVA_API_KEY || "",
     custom: process.env.CUSTOM_API_KEY || ""
   }
 };
@@ -50,6 +53,12 @@ export const providerDefaults = {
   qwen: { label:"通义千问（阿里云百炼）", baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1", model:"qwen3.8-max", protocol:"chat_completions" },
   moonshot: { label:"Kimi / 月之暗面", baseUrl:"https://api.moonshot.cn/v1", model:"kimi-k2.6", protocol:"chat_completions" },
   baidu: { label:"百度千帆", baseUrl:"https://qianfan.baidubce.com/v2", model:"ernie-5.0", protocol:"chat_completions" },
+  sensenova: { label:"商汤日日新", baseUrl:"https://token.sensenova.cn/v1", model:"deepseek-v4-flash", protocol:"chat_completions", models:[
+    {id:"deepseek-v4-flash",label:"DeepSeek V4 Flash（推荐）"},
+    {id:"deepseek-v4-pro",label:"DeepSeek V4 Pro"},
+    {id:"glm-5.2",label:"GLM-5.2"},
+    {id:"kimi-k3",label:"Kimi K3"}
+  ] },
   custom: { label:"其他 OpenAI-compatible API", baseUrl:"", model:"", protocol:"chat_completions" },
   mock: { label:"离线界面演示", baseUrl:"", model:"local-demo", protocol:"mock" }
 };

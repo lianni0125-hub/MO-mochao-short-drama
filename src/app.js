@@ -130,7 +130,7 @@ app.put("/api/workbench", (req,res) => { try { res.json(configureWorkbench(req.b
 app.get("/api/settings/llm", (_req, res) => res.json({
   provider: activeProvider().id, model: activeProvider().model, baseUrl:activeProvider().baseUrl,
   apiKeyConfigured: Boolean(activeProvider().apiKey), apiKeyHint: activeProvider().apiKey ? `••••••••${activeProvider().apiKey.slice(-4)}` : "",
-  providers:Object.entries(providerDefaults).map(([id,p])=>({id,label:p.label,baseUrl:p.baseUrl,model:p.model})),
+  providers:Object.entries(providerDefaults).map(([id,p])=>({id,label:p.label,baseUrl:p.baseUrl,model:p.model,models:p.models||[]})),
   embedding:(()=>{const p=activeEmbeddingProvider();return {provider:p.id,baseUrl:p.baseUrl,model:p.model,groupId:p.groupId||"",apiKeyConfigured:Boolean(p.apiKey),apiKeyHint:p.apiKey?`••••••••${p.apiKey.slice(-4)}`:""}})(),
   embeddingProviders:Object.entries(embeddingProviderDefaults).map(([id,p])=>{const key=config.embeddingProviderKeys?.[id]||"";return {id,label:p.label,baseUrl:p.baseUrl,model:p.model,needsGroupId:id==="minimax",groupId:id==="minimax"?config.embeddingGroupId||"":"",apiKeyConfigured:Boolean(key),apiKeyHint:key?`••••••••${key.slice(-4)}`:""};})
 }));
@@ -146,7 +146,7 @@ app.put("/api/settings/llm", (req, res) => {
   const envPath = path.join(config.root, ".env");
   const existing = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8").split(/\r?\n/) : [];
   const values = new Map(existing.filter(Boolean).map(line => { const i=line.indexOf("="); return i>0?[line.slice(0,i),line.slice(i+1)]:[line,""]; }));
-  const keyName={openai:"OPENAI_API_KEY",minimax:"MINIMAX_API_KEY",zhipu:"ZHIPU_API_KEY",deepseek:"DEEPSEEK_API_KEY",qwen:"DASHSCOPE_API_KEY",moonshot:"MOONSHOT_API_KEY",baidu:"BAIDU_QIANFAN_API_KEY",custom:"CUSTOM_API_KEY"}[provider];
+  const keyName={openai:"OPENAI_API_KEY",minimax:"MINIMAX_API_KEY",zhipu:"ZHIPU_API_KEY",deepseek:"DEEPSEEK_API_KEY",qwen:"DASHSCOPE_API_KEY",moonshot:"MOONSHOT_API_KEY",baidu:"BAIDU_QIANFAN_API_KEY",sensenova:"SENSENOVA_API_KEY",custom:"CUSTOM_API_KEY"}[provider];
   values.set("LLM_PROVIDER", provider); values.set("OPENAI_MODEL", model); values.set("LLM_BASE_URL", baseUrl); if (keyName&&key) values.set(keyName,key);
   fs.writeFileSync(envPath, [...values].map(([k,v]) => `${k}=${v}`).join("\n") + "\n", { encoding:"utf8", mode:0o600 });
   config.llmProvider=provider; config.openaiModel=model; config.baseUrl=baseUrl; if(key) config.providerKeys[provider]=key;
