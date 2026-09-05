@@ -1,16 +1,30 @@
 import { all, detachLegacyStoryStateFromControls, get, run, now, transaction } from "./db.js";
 import { ARTIFACT_TITLES, canonicalRelationshipSubject, parseArtifact, parseProject, resolveProtagonist } from "./domain.js";
 import { buildEpisodeArrangementPrompt, buildEpisodeBoundariesPrompt, buildEpisodeBoundaryPrompt, buildEpisodeNovelPrompt, buildPreviousNovelSummaryPrompt, buildSkillEpisodePrompt, buildPlanningSectionPrompt, buildStagePrompt, buildOutlineSpinePrompt, buildOutlineDramaticBatchPrompt, buildOutlineFinalizePrompt } from "./prompts.js";
-import { generate } from "./llm.js";
+import { consolidateEpisodeArrangementScenes, generate, novelSceneTransitionCandidates } from "./llm.js";
 import { searchIdeaKnowledge } from "./knowledge.js";
 import { templateContext, templateWritingGuide } from "./templates.js";
 import { bootstrapCharacterMemory, compileMemoryContext, extractEpisodeMemory } from "./memory.js";
 import { embeddingConfigured } from "./embeddings.js";
+import { activeProvider } from "./config.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 const jobControllers=new Map();
 const jobContext=new AsyncLocalStorage();
 const currentSignal=()=>jobContext.getStore()?.signal||null;
+const OUTLINE_SPINE_API_ERROR="OUTLINE_SPINE_API_ERROR::";
+const outlineSpineApiFailure=(error,elapsedMs,extra={})=>{
+  const provider=activeProvider(),raw=String(error?.message||error||"未知错误"),status=Number(error?.status||error?.statusCode||0)||null;
+  let code="long_task_incompatible",title="API 未能完成全剧骨架",message="当前 API 可以处理短文本，但未能完成本次长结构化任务。可能涉及长输出能力、线路稳定性或结构化输出兼容性。";
+  if(status===402||/(?:402|insufficient.?balance|余额不足|额度不足|欠费)/i.test(raw)){code="insufficient_balance";title="API 额度不足";message="当前 API 拒绝了长文本请求，可能是余额、套餐额度或可用 Token 不足。请检查服务商额度后重试。";}
+  else if(status===429||/(?:429|rate.?limit|too many requests|请求过多|限流|TPM|RPM)/i.test(raw)){code="rate_limit";title="API 触发限流";message="当前请求触发了 API 的频率、Token 或并发限制。请稍后重试，或降低并发、更换额度更高的 API。";}
+  else if(status===401||status===403||/(?:401|403|unauthorized|forbidden|鉴权|无权限|API Key)/i.test(raw)){code="permission";title="API 权限不足";message="当前 API Key、模型权限或服务商账户权限不足，无法执行全剧骨架请求。请检查模型设置与服务商权限。";}
+  else if(/(?:finish_reason\s*[=:]\s*length|达到.{0,8}(?:输出|长度).{0,8}上限|输出.{0,8}(?:上限|截断)|max(?:imum)?.?tokens?|context length|token.{0,6}(?:limit|超限)|413|too long)/i.test(raw)){code="output_limit";title="API 输出长度不足";message="当前 API 未能完整返回全剧骨架，内容可能达到该模型或接口的单次输出上限。请更换支持更长输出的模型或 API。";}
+  else if(/(?:timed out|timeout|超时|504|gateway timeout)/i.test(raw)){code="timeout";title="API 长请求超时";message="模型在规定时间内没有完成返回，可能是 API、中转线路或部署网络提前断开。本次任务已安全停止。";}
+  else if(/(?:ECONN|socket|connection|fetch failed|network|连接.*(?:关闭|中断|失败))/i.test(raw)){code="connection";title="API 长连接中断";message="API 或中转线路在返回全剧骨架前断开了连接。本次任务已安全停止，请检查线路或更换 API。";}
+  else if(/(?:JSON|结构化|没有找到 JSON|可解析|应返回\d+集|缺少或重复EP)/i.test(raw)){code="structured_output";title="API 结构化输出不稳定";message="当前模型可以完成短文本生成，但未能完整返回可解析的全剧骨架。请更换结构化输出能力更强的模型或 API。";}
+  return new Error(OUTLINE_SPINE_API_ERROR+JSON.stringify({code,title,message,provider:provider.label,model:provider.model,status,elapsed_ms:Math.max(0,Number(elapsedMs)||0),raw_error:raw,...extra}));
+};
 const parseJob = row => row ? { ...row, payload:JSON.parse(row.payload_json||"{}"), result:JSON.parse(row.result_json||"{}"),checkpoint:JSON.parse(row.checkpoint_json||"{}") } : null;
 const projectFor = id => parseProject(get("SELECT * FROM projects WHERE id=@id",{id}));
 const constraintsFor = id => all("SELECT * FROM constraints WHERE project_id=@id ORDER BY id",{id});
@@ -33,6 +47,28 @@ const outlineText=(value,separator="")=>{
   if(typeof value==="object")return Object.values(value).map(item=>outlineText(item,separator)).filter(Boolean).join(separator||"；");
   return String(value).trim();
 };
+const characterNumber=value=>{
+  const digits={一:1,二:2,两:2,三:3,四:4,五:5,六:6,七:7,八:8,九:9,十:10};
+  const raw=String(value||"").trim();
+  if(!raw)return 0;if(/^\d+$/.test(raw))return Number(raw);
+  if(raw==="十")return 10;if(raw.startsWith("十"))return 10+(digits[raw[1]]||0);if(raw.endsWith("十"))return (digits[raw[0]]||0)*10;
+  return raw.includes("十")?(digits[raw[0]]||0)*10+(digits[raw[2]]||0):(digits[raw]||0);
+};
+const requestedCharacterSpec=value=>{
+  const source=String(value||""),number="(\\d{1,2}|[一二两三四五六七八九十]{1,2})",unit="(?:个|名|位)",role="((?:主要)?(?:人物|角色|人设|男主|女主|男配|女配|反派|配角))";
+  const addition=source.match(new RegExp(`(?:少了|缺少|缺|增加|新增|添加|再加|补充|补齐|再来|还要)[^。；，,]{0,8}?${number}\\s*${unit}\\s*${role}`));
+  if(addition)return {mode:"add",count:characterNumber(addition[1]),role:addition[2]};
+  const total=source.match(new RegExp(`(?:生成|设计|安排|需要|要|希望|共|总共|一共)?\\s*${number}\\s*${unit}\\s*${role}`));
+  return total?{mode:"total",count:characterNumber(total[1]),role:total[2]}:{mode:"default",count:0,role:""};
+};
+const roleMatches=(character,role)=>{
+  if(!role||/(?:人物|角色|人设)$/.test(role))return true;
+  const value=String(character?.role||"");
+  if(role==="男主")return /男.*主|主角/.test(value)&&!/女/.test(value);
+  if(role==="女主")return /女.*主|主角/.test(value)&&!/男/.test(value);
+  return value.includes(role.replace(/^主要/,""));
+};
+const characterComplianceSchema={type:"object",properties:{passed:{type:"boolean"},missing_requirements:{type:"array",items:{type:"string"}}},required:["passed","missing_requirements"],additionalProperties:false};
 const normalizeOutlineEpisode=ep=>({...ep,episode_no:Number(ep?.episode_no),title:outlineText(ep?.title),summary:outlineText(ep?.summary,"\n"),scene_treatment:outlineText(ep?.scene_treatment,"\n"),hook:outlineText(ep?.hook,"\n"),purpose:outlineText(ep?.purpose,"；"),start_state:outlineText(ep?.start_state,"；"),end_state:outlineText(ep?.end_state,"；"),required_plot:outlineText(ep?.required_plot,"→"),must_reveal:outlineText(ep?.must_reveal,"；"),must_not_reveal:outlineText(ep?.must_not_reveal,"；")||"无",rhythm:outlineText(ep?.rhythm,"→"),emotion:outlineText(ep?.emotion,"→"),card_relation:outlineText(ep?.card_relation,"；"),first_appearance_characters:outlineText(ep?.first_appearance_characters,"；")||"无"});
 const appearanceNames=value=>[...new Set(String(value||"").split(/[；;、,，\n]+/).map(item=>item.trim()).filter(item=>item&&!/^(?:无|暂无|没有)$/.test(item)))];
 const appearanceMap=episodes=>{const map=new Map();for(const ep of episodes||[])for(const name of appearanceNames(ep.first_appearance_characters))if(!map.has(name))map.set(name,Number(ep.episode_no));return map;};
@@ -103,8 +139,7 @@ async function runStage(job,project){
     const nextCharacters=Array.isArray(output?.characters)?[...output.characters]:[];
     for(const oldCharacter of oldCharacters){
       const sameName=nextCharacters.some(item=>String(item.name||"").trim()&&String(item.name||"").trim()===String(oldCharacter.name||"").trim());
-      const sameRole=nextCharacters.some(item=>String(item.role||"").trim()&&String(item.role||"").trim()===String(oldCharacter.role||"").trim());
-      if(!sameName&&!sameRole)nextCharacters.push(oldCharacter);
+      if(!sameName)nextCharacters.push(oldCharacter);
     }
     output={...output,visual_style:existing.visual_style||output?.visual_style||"",characters:nextCharacters};
   }
@@ -244,11 +279,14 @@ async function runOutlineBatched(job,project){
     for(let round=1;round<=20;round++){
       const prompt=round===1?spinePrompt:`${spinePrompt}\n\n【上一版骨架】\n${JSON.stringify(spine,null,2)}\n\n【定向修订】\n${spineIssues.join("；")}。保持已有因果设计，只补齐或修正集数，重新返回 EP01–EP${String(totalEpisodes).padStart(2,"0")} 的完整骨架。`;
       run("UPDATE jobs SET message=@message WHERE id=@id",{message:round===1?`正在建立 ${totalEpisodes} 集全剧因果骨架`:`全剧因果骨架不完整，正在定向修订（${round}/20）：${spineIssues.join("；")}`,id:job.id});
-      spineResult=await generate({stage:"outline_spine",project,prompt,schema:episodeListSchema,extra:{start:1,end:totalEpisodes},signal:currentSignal()});
+      const started=Date.now();
+      try{spineResult=await generate({stage:"outline_spine",project,prompt,schema:episodeListSchema,extra:{start:1,end:totalEpisodes},signal:currentSignal()});}
+      catch(error){if(currentSignal()?.aborted)throw error;throw outlineSpineApiFailure(error,Date.now()-started);}
       spine=(spineResult.output?.episodes||[]).filter(item=>Number(item.episode_no)>=1&&Number(item.episode_no)<=totalEpisodes).sort((a,b)=>Number(a.episode_no)-Number(b.episode_no));spineIssues=[];
       if(spine.length!==totalEpisodes)spineIssues.push(`应返回${totalEpisodes}集，实际${spine.length}集`);
       for(let i=0;i<spine.length;i++)if(Number(spine[i].episode_no)!==i+1)spineIssues.push(`缺少或重复EP${i+1}`);
       if(!spineIssues.length)break;
+      throw outlineSpineApiFailure(new Error(spineIssues.join("；")),Date.now()-started,{returned_episodes:spine.length,expected_episodes:totalEpisodes});
     }
     if(spineIssues.length)throw new Error(`全剧因果骨架连续20轮仍不完整：${spineIssues.join("；")}`);
     for(const episode of spine)episode.first_appearance_characters="无";
@@ -343,9 +381,9 @@ async function generateEpisodeNovel(project,episode){
 }
 async function generateEpisodeArrangement(project,episode){
   if(!String(episode.novel||"").trim())throw new Error("请先生成并确认小说中间稿");
-  const c=episodeContext(project,episode),prompt=buildEpisodeArrangementPrompt(project,c.artifacts,episode,c.states,c.writingGuide,{previousIdentifiers:c.previousIdentifiers});
-  const result=await generate({stage:"episode_arrangement",project,prompt,extra:{episode},signal:currentSignal(),onAttempt:info=>{if(currentSignal()?.aborted)return;const detail=info.retry?`，上一轮未通过：${String(info.lastError).slice(0,90)}`:"";run("UPDATE jobs SET message=@message WHERE project_id=@pid AND type IN ('episode_arrangement','episode','full_book') AND status='running'",{message:`正在生成 EP${String(episode.episode_no).padStart(2,"0")} 剧情安排（第${info.attempt}/${info.total}轮）${detail}`,pid:project.id});}});
-  const plan=String(result.output||"").trim();
+  const c=episodeContext(project,episode),sceneTransitionCandidates=novelSceneTransitionCandidates(episode.novel),prompt=buildEpisodeArrangementPrompt(project,c.artifacts,episode,c.states,c.writingGuide,{previousIdentifiers:c.previousIdentifiers,sceneTransitionCandidates});
+  const result=await generate({stage:"episode_arrangement",project,prompt,extra:{episode},signal:currentSignal(),onAttempt:info=>{if(currentSignal()?.aborted)return;const detail=info.retry?`，上一轮未通过：${String(info.lastError).slice(0,90)}`:"",round=info.phase==="patch"?`轻量补丁第${info.phaseAttempt}/${info.phaseTotal}轮`:`完整生成第${info.phaseAttempt}/${info.phaseTotal}轮`;run("UPDATE jobs SET message=@message WHERE project_id=@pid AND type IN ('episode_arrangement','episode','full_book') AND status='running'",{message:`正在生成 EP${String(episode.episode_no).padStart(2,"0")} 剧情安排（${round}）${detail}`,pid:project.id});}});
+  const plan=consolidateEpisodeArrangementScenes(String(result.output||"").trim()).trim();
   if(!plan)throw new Error("模型没有返回情绪和剧情安排");
   run("UPDATE episodes SET episode_plan=@plan,status='planned_for_script',updated_at=@time WHERE id=@id",{plan,time:now(),id:episode.id});
   run("INSERT INTO generations(project_id,stage,provider,model,prompt,output,status,input_tokens,output_tokens) VALUES(@pid,'episode_arrangement',@provider,@model,@prompt,@output,'completed',@input,@out)",{pid:project.id,provider:result.provider,model:result.model,prompt,output:plan,input:result.usage.input_tokens||0,out:result.usage.output_tokens||0});
@@ -369,7 +407,7 @@ async function generateEpisodeScript(project,episode){
   const basePrompt=buildSkillEpisodePrompt(project,c.constraints,c.artifacts,episode,c.states,c.writingGuide,{previousEnding:c.previousEnding,novel:episode.novel,episodePlan:episode.episode_plan,lockedIdentifiers:c.previousIdentifiers,goldenKnowledgeOwners});
   const promptWithOwners=`${basePrompt}\n\n【人物姓名｜身份】\n${characterIdentityLines||"暂无"}${appearance.text?`\n\n【本集人物出场状态｜硬边界】\n${appearance.text}\n未到首次出场集的人物不得进入现场、行动、说话或联系其他人物；仅被提及姓名不算本人出场。`:""}`;
   const novelNarration=String(episode.novel||"").replace(/「[^」]*」/g,"").replace(/“[^”]*”/g,"").replace(/"[^"\n]*"/g,""),sourceNarrativePerson=/我|我们|咱们/.test(novelNarration)?"first":"third";
-  const result=await generate({stage:"episode",project,prompt:promptWithOwners,extra:{episode,minEffectiveCharacters:minimumCharacters,maxEffectiveCharacters:2000,sceneMin:1,sceneMax:3,shortSceneHeading:String(c.writingGuide?.format?.sceneHeading||"").includes("外/内"),lockedIdentifiers:c.previousIdentifiers,protagonistIdentifier,characterIdentifiers,forbiddenAppearanceCharacters:appearance.forbidden,sourceNarrativePerson,goldenKnowledgeEntries,goldenKnowledgeBasis:`${episode.summary||""}\n${episode.required_plot||""}`},signal:currentSignal(),onAttempt:info=>{if(currentSignal()?.aborted)return;const detail=info.retry?`，上一轮未通过：${String(info.lastError).slice(0,90)}`:"";run("UPDATE jobs SET message=@message WHERE project_id=@pid AND type IN ('episode_script','episode','full_book') AND status='running'",{message:`正在生成或修订 EP${String(episode.episode_no).padStart(2,"0")} 剧本（第${info.attempt}/${info.total}轮）${detail}`,pid:project.id});}});
+  const result=await generate({stage:"episode",project,prompt:promptWithOwners,extra:{episode,minEffectiveCharacters:minimumCharacters,maxEffectiveCharacters:2000,shortSceneHeading:String(c.writingGuide?.format?.sceneHeading||"").includes("外/内"),lockedIdentifiers:c.previousIdentifiers,protagonistIdentifier,characterIdentifiers,forbiddenAppearanceCharacters:appearance.forbidden,sourceNarrativePerson,goldenKnowledgeEntries,goldenKnowledgeBasis:`${episode.summary||""}\n${episode.required_plot||""}`},signal:currentSignal(),onAttempt:info=>{if(currentSignal()?.aborted)return;const detail=info.retry?`，上一轮未通过：${String(info.lastError).slice(0,90)}`:"";run("UPDATE jobs SET message=@message WHERE project_id=@pid AND type IN ('episode_script','episode','full_book') AND status='running'",{message:`正在生成或修订 EP${String(episode.episode_no).padStart(2,"0")} 剧本（第${info.attempt}/${info.total}轮）${detail}`,pid:project.id});}});
   if(!String(result.output||"").trim())throw new Error("模型没有返回剧本正文，已保留原有内容，请重试");
   const identifiers=extractCharacterIdentifiers(result.output);
   run("UPDATE episodes SET script=@script,character_identifiers_json=@identifiers,status='drafted',updated_at=@time WHERE id=@id",{script:result.output,identifiers:JSON.stringify(identifiers),time:now(),id:episode.id});
@@ -597,8 +635,8 @@ async function execute(job){
   }
   if(job.type==="episode"){const episode=get("SELECT * FROM episodes WHERE project_id=@pid AND episode_no=@no",{pid:project.id,no:Number(job.target)});if(!episode)throw new Error("该集不存在，请先生成逐集框架");return writeEpisode(project,episode,job);}
   if(job.type==="full_book"){
-    const payload=job.payload,overwrite=Boolean(payload.overwrite),startEpisode=Math.max(1,Number(payload.start_episode)||1);
-    const checkpoint={...(job.checkpoint||{})};if(!Array.isArray(checkpoint.episode_numbers)){const initial=all(`SELECT episode_no FROM episodes WHERE project_id=@id AND episode_no>=@start ${overwrite?"":"AND (script IS NULL OR script='')"} ORDER BY episode_no`,{id:project.id,start:startEpisode});if(overwrite&&startEpisode===1&&!checkpoint.memory_reset_done){run("UPDATE jobs SET message='正在清理旧剧情记忆，保留03初始人物档案' WHERE id=@id",{id:job.id});clearGeneratedMemory(project.id);checkpoint.memory_reset_done=true;}checkpoint.episode_numbers=initial.map(x=>x.episode_no);checkpoint.current_episode=null;checkpoint.stage="novel";saveCheckpoint(job.id,checkpoint,`准备生成 ${initial.length} 集`,0);job.progress=0;}
+    const payload=job.payload,overwrite=Boolean(payload.overwrite),startEpisode=Math.max(1,Number(payload.start_episode)||1),endEpisode=Math.max(startEpisode,Number(payload.end_episode)||Number(project.total_episodes));
+    const checkpoint={...(job.checkpoint||{})};if(!Array.isArray(checkpoint.episode_numbers)){const initial=all(`SELECT episode_no FROM episodes WHERE project_id=@id AND episode_no>=@start AND episode_no<=@end ${overwrite?"":"AND (script IS NULL OR script='')"} ORDER BY episode_no`,{id:project.id,start:startEpisode,end:endEpisode});if(overwrite&&startEpisode===1&&!checkpoint.memory_reset_done){run("UPDATE jobs SET message='正在清理旧剧情记忆，保留03初始人物档案' WHERE id=@id",{id:job.id});clearGeneratedMemory(project.id);checkpoint.memory_reset_done=true;}checkpoint.episode_numbers=initial.map(x=>x.episode_no);checkpoint.current_episode=null;checkpoint.stage="novel";saveCheckpoint(job.id,checkpoint,`准备生成 ${initial.length} 集`,0);job.progress=0;}
     if(!checkpoint.episode_numbers.length)throw new Error(overwrite?"没有可写的逐集框架":"所有集都已有剧本；如需重写请选择覆盖模式");
     run("UPDATE jobs SET total=@total WHERE id=@id",{total:checkpoint.episode_numbers.length,id:job.id});
     for(let i=Math.max(0,Number(job.progress)||0);i<checkpoint.episode_numbers.length;i++){const episode=get("SELECT * FROM episodes WHERE project_id=@pid AND episode_no=@no",{pid:project.id,no:checkpoint.episode_numbers[i]});if(!episode)throw new Error(`EP${String(checkpoint.episode_numbers[i]).padStart(2,"0")} 不存在`);job.progress=i;await writeFullBookEpisode(project,episode,job,checkpoint,overwrite);checkpoint.current_episode=null;checkpoint.stage="novel";job.progress=i+1;saveCheckpoint(job.id,checkpoint,`已完成 EP${String(episode.episode_no).padStart(2,"0")}（${i+1}/${checkpoint.episode_numbers.length}）`,i+1);}
@@ -606,17 +644,17 @@ async function execute(job){
   }
   throw new Error("未知任务类型");
 }
-const workbenchSettings=()=>get("SELECT * FROM workbench_settings WHERE id=1")||{parallel_enabled:0,session_id:"",concurrency_mode:"auto",concurrency_limit:3,adaptive_limit:3,recover_at:null};
-const clampConcurrency=value=>Math.max(1,Math.min(3,Number(value)||1));
+const workbenchSettings=()=>get("SELECT * FROM workbench_settings WHERE id=1")||{parallel_enabled:0,session_id:"",concurrency_mode:"auto",concurrency_limit:5,adaptive_limit:5,recover_at:null};
+const clampConcurrency=value=>Math.max(1,Math.min(5,Number(value)||1));
 const freshWorkbenchSession=()=>`wb-${Date.now()}-${Math.random().toString(36).slice(2,9)}`;
 let schedulerPending=false;
-function maybeRecoverConcurrency(){const settings=workbenchSettings();if(!settings.parallel_enabled||settings.concurrency_mode!=="auto"||!settings.recover_at||Date.now()<Date.parse(settings.recover_at))return settings;const next=Math.min(3,clampConcurrency(settings.adaptive_limit)+1),recoverAt=next<3?new Date(Date.now()+10*60*1000).toISOString():null;run("UPDATE workbench_settings SET adaptive_limit=@limit,recover_at=@recover,updated_at=@time WHERE id=1",{limit:next,recover:recoverAt,time:now()});scheduleWork();return workbenchSettings();}
+function maybeRecoverConcurrency(){const settings=workbenchSettings();if(!settings.parallel_enabled||settings.concurrency_mode!=="auto"||!settings.recover_at||Date.now()<Date.parse(settings.recover_at))return settings;const next=Math.min(5,clampConcurrency(settings.adaptive_limit)+1),recoverAt=next<5?new Date(Date.now()+10*60*1000).toISOString():null;run("UPDATE workbench_settings SET adaptive_limit=@limit,recover_at=@recover,updated_at=@time WHERE id=1",{limit:next,recover:recoverAt,time:now()});scheduleWork();return workbenchSettings();}
 function noteConcurrencyPressure(message){if(!/(?:429|rate.?limit|请求过多|限流|平台繁忙|server busy|request timed out|connection error)/i.test(String(message||"")))return;const settings=workbenchSettings();if(!settings.parallel_enabled||settings.concurrency_mode!=="auto")return;run("UPDATE workbench_settings SET adaptive_limit=@limit,recover_at=@recover,updated_at=@time WHERE id=1",{limit:Math.max(1,clampConcurrency(settings.adaptive_limit)-1),recover:new Date(Date.now()+10*60*1000).toISOString(),time:now()});}
 const effectiveConcurrency=settings=>settings.parallel_enabled?(settings.concurrency_mode==="auto"?clampConcurrency(settings.adaptive_limit):clampConcurrency(settings.concurrency_limit)):1;
 function scheduleWork(){if(schedulerPending)return;schedulerPending=true;setImmediate(()=>{schedulerPending=false;work();});}
 function nextRunnableJob(settings){const rows=all("SELECT * FROM jobs WHERE status='queued' ORDER BY id");if(!settings.parallel_enabled)return rows[0]||null;const runningProjects=new Set([...jobControllers.values()].map(item=>Number(item.projectId)));return rows.find(row=>row.workbench_session_id===settings.session_id&&!runningProjects.has(Number(row.project_id)))||null;}
 async function runJob(row){let job=parseJob(row);const controller=new AbortController();jobControllers.set(job.id,{controller,projectId:job.project_id,sessionId:job.workbench_session_id||""});const start=now();run("UPDATE jobs SET status='running',started_at=COALESCE(started_at,@time),attempt_started_at=@time,step_started_at=COALESCE(step_started_at,@time),message=CASE WHEN progress>0 THEN '正在继续未完成任务' ELSE '任务已开始' END WHERE id=@id AND status='queued'",{time:start,id:job.id});const heartbeat=setInterval(()=>flushElapsed(job.id),5000);
-  try{await jobContext.run({signal:controller.signal,jobId:job.id,projectId:job.project_id},async()=>{let result;while(true){job=parseJob(get("SELECT * FROM jobs WHERE id=@id",{id:job.id}));try{result=await execute(job);break}catch(error){const current=get("SELECT * FROM jobs WHERE id=@id",{id:job.id});if(current?.status!=="running")throw error;const count=Number(current?.auto_retry_count||0),limit=Math.max(0,Number(current?.auto_retry_limit??5)),message=String(error?.message||error),blocked=/(?:敏感|拒绝|拦截|API Key|401|403|余额|额度|鉴权|模型不存在)/i.test(message),autoContinuable=job.type==="full_book"||job.type==="outline_first_appearances"||(job.type==="stage"&&job.target==="outline");noteConcurrencyPressure(message);writeStepLog(current,{outcome:"failed",message});run("UPDATE jobs SET step_started_at=@time WHERE id=@id",{time:now(),id:job.id});if(!autoContinuable||blocked||count>=limit)throw error;flushElapsed(job.id);const next=count+1,restart=now();run("UPDATE jobs SET auto_retry_count=@count,error=@error,message=@message,attempt_started_at=@time WHERE id=@id",{count:next,error:message,message:`任务中断，正在自动继续（${next}/${limit}）`,time:restart,id:job.id});await new Promise(resolve=>setTimeout(resolve,Math.min(5000,next*750)));}}
+  try{await jobContext.run({signal:controller.signal,jobId:job.id,projectId:job.project_id},async()=>{let result;while(true){job=parseJob(get("SELECT * FROM jobs WHERE id=@id",{id:job.id}));try{result=await execute(job);break}catch(error){const current=get("SELECT * FROM jobs WHERE id=@id",{id:job.id});if(current?.status!=="running")throw error;const count=Number(current?.auto_retry_count||0),limit=Math.max(0,Number(current?.auto_retry_limit??5)),message=String(error?.message||error),blocked=message.startsWith(OUTLINE_SPINE_API_ERROR)||/(?:敏感|拒绝|拦截|API Key|401|403|余额|额度|鉴权|模型不存在)/i.test(message),autoContinuable=job.type==="full_book"||job.type==="outline_first_appearances"||(job.type==="stage"&&job.target==="outline");noteConcurrencyPressure(message);writeStepLog(current,{outcome:"failed",message});run("UPDATE jobs SET step_started_at=@time WHERE id=@id",{time:now(),id:job.id});if(!autoContinuable||blocked||count>=limit)throw error;flushElapsed(job.id);const next=count+1,restart=now();run("UPDATE jobs SET auto_retry_count=@count,error=@error,message=@message,attempt_started_at=@time WHERE id=@id",{count:next,error:message,message:`任务中断，正在自动继续（${next}/${limit}）`,time:restart,id:job.id});await new Promise(resolve=>setTimeout(resolve,Math.min(5000,next*750)));}}
     if(get("SELECT status FROM jobs WHERE id=@id",{id:job.id})?.status==="running"){flushElapsed(job.id);run("UPDATE jobs SET status='completed',progress=total,message='已完成',error='',result_json=@result,finished_at=@time,attempt_started_at=NULL WHERE id=@id",{result:JSON.stringify(result),time:now(),id:job.id});}});}
   catch(error){if(get("SELECT status FROM jobs WHERE id=@id",{id:job.id})?.status==="running"){flushElapsed(job.id);const message=error?.message||String(error);noteConcurrencyPressure(message);run("UPDATE jobs SET status='failed',message='执行失败',error=@error,finished_at=@time,attempt_started_at=NULL WHERE id=@id",{error:message,time:now(),id:job.id});}}
   finally{clearInterval(heartbeat);jobControllers.delete(job.id);scheduleWork();}

@@ -11,7 +11,7 @@
 - 🔥 **短剧情绪与节奏设计**：普通/下沉剧情模式、强烈/异常强烈情绪、第一/第三人称和“必须发生/不得揭示”硬边界。
 - 🧵 **分层写作**：小说中间稿完成剧情设计，再组织剧情安排并转换为可拍摄剧本；每一步均可检查、保存和重试。
 - ⚙️ **长任务可靠运行**：后台任务、阶段检查点、自动继续、手动续跑、跨项目并行工作台与动态并发控制。
-- 🔌 **多模型可接入**：MiniMax、OpenAI、智谱、DeepSeek、通义千问、Kimi、百度千帆、商汤日日新及 OpenAI-compatible API；商汤接口可直接切换 DeepSeek V4 Flash、DeepSeek V4 Pro、GLM-5.2 和 Kimi K3，Embedding 独立配置。
+- 🔌 **多模型可接入**：MiniMax、OpenAI、智谱、DeepSeek、Kimi、百度千帆、商汤日日新及 OpenAI-compatible API；商汤接口可直接切换 DeepSeek V4 Flash、DeepSeek V4 Pro、GLM-5.2 和 Kimi K3，Embedding 独立配置。
 - 📚 **灵感资料库**：Reality 现实素材与 Market 平台趋势，支持公开来源更新、RSS、手动资料及 RAG 召回。
 - 📄 **专业模板与 DOCX 工作流**：自带默认专业短剧、知乎盐选（漫剧）两套模板，也可分析并复核上传模板；支持按集导出梗概、小说或剧本。
 - 🔐 **数据自主保存**：创作内容与 API 配置默认保存在当前设备或部署实例中，系统不会主动上传至项目作者或公共代码仓库。
@@ -94,7 +94,7 @@ bash /root/MO-mochao-short-drama/scripts/autodl-start.sh
 
 启动后可在“模型设置”中分别配置正文生成 API 与 Embedding API。两套配置互相独立：
 
-- 正文生成支持 MiniMax、OpenAI、智谱、DeepSeek、通义千问、Kimi、百度千帆、商汤日日新及兼容接口；商汤接口内置四种模型预设并保留手动填写能力。
+- 正文生成支持 MiniMax、OpenAI、智谱、DeepSeek、Kimi、百度千帆、商汤日日新及兼容接口；商汤接口内置四种模型预设并保留手动填写能力。
 - Embedding 用于剧情记忆建库和语义召回，可独立选择 Gemini、MiniMax、智谱、通义千问、百度千帆等供应商。
 - 未配置 Embedding 时，策划、人设、模板、保存和导出仍可使用；涉及向量记忆的流程会提示完成配置。
 

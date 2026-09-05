@@ -294,8 +294,8 @@ CREATE INDEX IF NOT EXISTS idx_jobs_project_created ON jobs(project_id, id DESC)
 CREATE TABLE IF NOT EXISTS workbench_settings (
   id INTEGER PRIMARY KEY CHECK(id=1), parallel_enabled INTEGER NOT NULL DEFAULT 0,
   session_id TEXT NOT NULL DEFAULT '', concurrency_mode TEXT NOT NULL DEFAULT 'auto',
-  concurrency_limit INTEGER NOT NULL DEFAULT 3, adaptive_limit INTEGER NOT NULL DEFAULT 3,
-  recover_at TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  concurrency_limit INTEGER NOT NULL DEFAULT 5, adaptive_limit INTEGER NOT NULL DEFAULT 5,
+  recover_at TEXT, concurrency_cap_version INTEGER NOT NULL DEFAULT 2, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 INSERT OR IGNORE INTO workbench_settings(id) VALUES(1);
 CREATE TABLE IF NOT EXISTS job_step_logs (
@@ -342,6 +342,12 @@ try { db.exec("ALTER TABLE jobs ADD COLUMN checkpoint_json TEXT NOT NULL DEFAULT
 try { db.exec("ALTER TABLE jobs ADD COLUMN step_started_at TEXT"); } catch {}
 try { db.exec("ALTER TABLE jobs ADD COLUMN workbench_session_id TEXT NOT NULL DEFAULT ''"); } catch {}
 try { db.exec("ALTER TABLE jobs ADD COLUMN interruption_reason TEXT NOT NULL DEFAULT ''"); } catch {}
+try { db.exec("ALTER TABLE workbench_settings ADD COLUMN concurrency_cap_version INTEGER NOT NULL DEFAULT 1"); } catch {}
+db.exec(`UPDATE workbench_settings SET
+  concurrency_limit=CASE WHEN concurrency_mode='auto' AND concurrency_limit=3 THEN 5 ELSE concurrency_limit END,
+  adaptive_limit=CASE WHEN concurrency_mode='auto' AND adaptive_limit=3 AND recover_at IS NULL THEN 5 ELSE adaptive_limit END,
+  concurrency_cap_version=2
+  WHERE concurrency_cap_version<2`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_workbench_session ON jobs(workbench_session_id,status,id)");
 try { db.exec("ALTER TABLE memory_events ADD COLUMN scene_no INTEGER NOT NULL DEFAULT 1"); } catch {}
 try { db.exec("ALTER TABLE memory_events ADD COLUMN source_line_start INTEGER"); } catch {}

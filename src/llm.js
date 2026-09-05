@@ -60,14 +60,52 @@ const normalizeNovelText=value=>stripNovelRevisionHeading(String(value||"")
   .replace(/[（）()]/g,"")
   .trim());
 
+function splitScreenplayCrowdedLines(lines){
+  const labelPattern=/(?:^|(?<=[。！？!?；;\s]))\s*([\p{Script=Han}A-Za-z0-9·]{1,20}(?:\s+V\.O\.|\s+OS)?：)/gu;
+  const metadata=/^(?:当前|剩余|累计|获得|消耗|任务|事件|状态|奖励|积分|余额|好感度|倒计时|等级|体力|战力|生命值|完成度)/;
+  return lines.flatMap(line=>{
+    const matches=[...line.matchAll(labelPattern)].filter(match=>!metadata.test(match[1]||""));
+    if(!matches.length||matches.length===1&&matches[0].index===0)return [line];
+    const cuts=matches.map(match=>match.index+(match[0].length-match[0].trimStart().length));
+    const parts=[];
+    if(cuts[0]>0)parts.push(line.slice(0,cuts[0]).trim());
+    for(let index=0;index<cuts.length;index++)parts.push(line.slice(cuts[index],cuts[index+1]??line.length).trim());
+    return parts.filter(Boolean);
+  });
+}
+
+const standaloneElapsedTimePattern=/^(?:又)?(?:过了|过去|经过|等了|等待了)?\s*(?:半|一|二|两|三|四|五|六|七|八|九|十|几十|数|几|\d+)\s*(?:分钟|小时)(?:后|以后|之后|过去(?:了)?|左右)?[。！!]?$/;
+const subjectWaitThenActionPattern=/^([\p{Script=Han}A-Za-z][\p{Script=Han}A-Za-z0-9·]{0,11}?)(?:又)?(?:等了|等待了)\s*(?:半|一|二|两|三|四|五|六|七|八|九|十|几十|数|几|\d+)\s*(?:分钟|小时)(?:后|以后|之后|左右)?[，,]\s*((?:拎|拿|抱|扶|提|抓|攥|扛|拖|推|拉|打开|关上|起身|站起|转身|继续|冲|跑|走|赶|回到|来到|进入|离开|返回|穿过|挤进|钻进|上车|下车|进门|出门)[\s\S]+)$/u;
+export function removeRedundantScreenplayTimeLines(lines){
+  const source=Array.isArray(lines)?lines:String(lines||"").split(/\r?\n/);
+  return source.map(line=>{
+    const value=String(line||"").trim();
+    if(!value||/^EP\s*\d+/i.test(value)||/^\d+\s+(?:内|外|内景|外景)\s+/.test(value))return value;
+    if(/^[^：\n]{1,30}(?:\s+V\.O\.|\s+OS)?\s*：/.test(value))return value;
+    if(standaloneElapsedTimePattern.test(value))return "";
+    const compact=value.match(subjectWaitThenActionPattern);
+    return compact?`${compact[1]}${compact[2]}`:value;
+  }).filter(Boolean);
+}
+
 export function cleanEpisodeText(content){
   let text=String(content||"").replace(/<think>[\s\S]*?<\/think>/gi,"").trim();
   text=text.replace(/^```(?:text|plaintext|markdown)?\s*/i,"").replace(/\s*```$/i,"").trim();
   text=text.replace(/\\r\\n|\\n|\\r/g,"\n");
+  // Screenplay output is plain text. Some providers nevertheless wrap every
+  // heading/dialogue line in Markdown emphasis; remove presentation-only
+  // markers before scene and dialogue parsing so they cannot become content.
+  text=text.split(/\r?\n/).map(line=>line
+    .replace(/^\s{0,3}#{1,6}\s+/,"")
+    .replace(/\*\*/g,"")
+    .replace(/^\s*_{2}([\s\S]*?)_{2}\s*$/,"$1")
+    .trim())
+    .filter(line=>line&&!/^(?:[-_*]\s*){3,}$/.test(line))
+    .join("\n");
   const episodeStart=text.search(/(?:^|\n)\s*EP\s*0*\d+\b/i);
   if(episodeStart>0)text=text.slice(episodeStart).trim();
   text=text.replace(/\n?\s*【?EP\s*0*\d+\s*(?:完|结束)】?\s*$/i,"").trim();
-  const lines=text.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  const lines=removeRedundantScreenplayTimeLines(splitScreenplayCrowdedLines(text.split(/\r?\n/).map(line=>line.trim()).filter(Boolean)));
   const isDialogue=line=>/^[^：\n]{1,30}(?:\s+V\.O\.|\s+OS)?\s*：/.test(line);
   const isHeading=line=>/^EP\s*\d+/i.test(line)||/^\d+\s+(?:内景?|外景?)\s+.+/.test(line);
   for(let i=0;i<lines.length-1;i++){
@@ -93,10 +131,323 @@ export function cleanEpisodeText(content){
   return result.join("\n").replace(/^\s*(?:\*\*)?\s*EP\s*0*\d+(?:\s*【[^】]+】)?\s*(?:\*\*)?\s*(?:\r?\n|$)/i,"").trim();
 }
 
-function plannedCompositeScenes(value){
-  const block=String(value||"").match(/【剧情安排】([\s\S]*?)(?=\n【逻辑推理】|$)/)?.[1]||"",groups=new Map();
-  for(const raw of block.split(/\r?\n/)){const match=raw.trim().match(/^(\d+)\s+(内\/外|外\/内|内景?|外景?)\s+(.+)$/);if(!match)continue;const number=Number(match[1]),tail=match[3].trim(),routeText=tail.replace(/\s+(?:凌晨|清晨|早晨|上午|中午|下午|傍晚|黄昏|深夜|夜|日|白天|夜晚|当天)(?:至(?:凌晨|清晨|早晨|上午|中午|下午|傍晚|黄昏|深夜|夜|日|白天|夜晚))?\s*$/,""),locations=routeText.split("→").map(item=>item.trim()).filter(Boolean),group=groups.get(number)||{number,locations:[],composite:false};for(const location of locations)if(!group.locations.includes(location))group.locations.push(location);group.composite=group.composite||locations.length>1||groups.has(number);groups.set(number,group)}
-  return [...groups.values()].filter(group=>group.composite&&group.locations.length>1);
+const sceneClockSource="(?:[零〇一二两三四五六七八九十百\\d]{1,5}(?:点|时)(?:[零〇一二两三四五六七八九十\\d]{1,3}分?|半)?(?:钟)?(?:左右|前后|许|多|整)?|(?:[01]?\\d|2[0-3])[:：][0-5]\\d(?:左右|前后|许)?)";
+const sceneDayPartSource="(?:黎明|拂晓|天亮前|天亮|凌晨|清晨|早晨|晨间|晨|大早|早上|早间|早|上午|中午|正午|午间|午后|下午|傍晚|黄昏|日暮|入夜|晚上|晚间|晚|夜里|深夜|午夜|半夜|子夜|夜间|夜晚|夜|白天|日间|日)";
+const sceneRelativeDaySource="(?:当天|当日|今日|今天|次日|翌日|第二天|第二日)?";
+const sceneRelativeTimeSource="(?:今早|今晚|今夜|明早|明晚|明夜|当晚|当夜)";
+const sceneStandaloneDaySource="(?:当天|当日|今日|今天|次日|翌日|第二天|第二日|昨日|昨天|前日|前天|明日|明天)";
+const sceneElapsedTimeSource="(?:(?:片刻|少顷|须臾|不久|一会儿|半晌|半小时|一小时|数小时|几小时|一夜|一整夜|一天|数日|几日|数天|几天|一周|数周|几周|一月|数月|几个月|一年|数年|几年|[零〇一二两三四五六七八九十百\\d]{1,5}(?:分钟|小时|天|日|周|星期|个月|月|年))(?:后|前|以后|以前))";
+const sceneEventTimeSource="(?:(?:早餐|早饭|午饭|晚饭|饭|放学|下班|上班|散会|会议|宴会|酒席|婚礼|葬礼|开庭|庭审|手术)(?:前|后|前后|期间|开始前|结束后)(?:不久|片刻|一会儿)?|(?:天刚蒙蒙亮|天色刚亮|太阳升起时|太阳落山前|太阳落山后|日出前|日出后|日落前|日落后|夜幕降临时))";
+const sceneCalendarTimeSource="(?:(?:本|这|上|下)?(?:周|星期)[一二三四五六日天]|(?:本|这|上|下)(?:周|星期|月|年)(?:初|末)?|(?:春节|元宵节|清明节|端午节|中秋节|国庆节|除夕)(?:当天|前|后|期间)?)";
+const sceneTimePointSource=`(?:${sceneRelativeDaySource}${sceneDayPartSource}(?:${sceneClockSource})?|${sceneRelativeTimeSource}(?:${sceneClockSource})?|${sceneRelativeDaySource}${sceneClockSource}|${sceneStandaloneDaySource}|${sceneElapsedTimeSource}|${sceneEventTimeSource}|${sceneCalendarTimeSource})`;
+const sceneTimeSuffixSource=`${sceneTimePointSource}(?:(?:至|到|—|－|-)${sceneTimePointSource})?`;
+const sceneTimeSuffixPattern=new RegExp(`${sceneTimeSuffixSource}$`);
+const strongSceneTransitionPattern=/(?:走进|冲进|跑进|进入|踏进|钻进|回到|返回|来到|抵达|赶到|冲回|停在|停靠在).{0,20}(?:出租屋|住处|家中|家里|房间|卧室|客厅|药店|医院|病房|办公室|会议室|公寓|公司|商场|店内|车内|车辆?|[\p{Script=Han}A-Za-z0-9]{1,16}(?:门口|楼前|堆旁|街口|巷口|车站|机场|码头|仓库|学校|教室|宿舍|酒店|餐厅|广场))/u;
+
+export function novelSceneTransitionCandidates(value,limit=64){
+  const segments=String(value||"").split(/(?<=[。！？!?])|\r?\n+/).map(item=>item.trim()).filter(Boolean),result=[];
+  for(const segment of segments){if(!strongSceneTransitionPattern.test(segment))continue;const concise=segment.slice(0,120);if(!result.includes(concise))result.push(concise);if(result.length>=limit)break;}
+  return result;
+}
+
+function plannedArrangementScenes(value){
+  const block=String(value||"").match(/【剧情安排】([\s\S]*?)(?=\n【逻辑推理】|$)/)?.[1]||"",lines=block.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),scenes=[];
+  for(let index=0;index<lines.length;index++){const match=lines[index].match(/^(\d+)\s+(内|外|内景|外景)\s+(.+)$/);if(match&&/^[（(]/.test(lines[index+1]||"")){const tail=match[3].trim(),knownTime=tail.match(sceneTimeSuffixPattern)?.[0],parts=tail.split(/\s+/),place=knownTime?tail.slice(0,-knownTime.length).trim():parts.slice(0,-1).join(" ");scenes.push({number:Number(match[1]),heading:lines[index],place});}}
+  return scenes;
+}
+
+function plannedScriptScenes(value){
+  const markerStart="\u3010\u5267\u60c5\u5b89\u6392\u3011",markerEnd="\u3010\u903b\u8f91\u63a8\u7406\u3011",source=String(value||""),start=source.indexOf(markerStart),end=source.indexOf(markerEnd,start+markerStart.length);
+  if(start<0)return [];
+  const lines=source.slice(start+markerStart.length,end<0?undefined:end).split(/\r?\n/).map(line=>line.trim()).filter(Boolean),scenes=[];
+  for(let index=0;index<lines.length;index++){
+    const match=lines[index].match(/^(\d+)\s+(\u5185|\u5916|\u5185\u666f|\u5916\u666f)\s+(.+)$/),body=lines[index+1]?.match(/^[\uFF08(]([\s\S]*)[\uFF09)]$/);if(!match||!body)continue;
+    const tail=match[3].trim(),knownTime=tail.match(sceneTimeSuffixPattern)?.[0],parts=tail.split(/\s+/),place=knownTime?tail.slice(0,-knownTime.length).trim():parts.slice(0,-1).join(" ");
+    scenes.push({number:Number(match[1]),heading:lines[index],place,time:knownTime||parts.at(-1)||"",body:body[1],events:body[1].split("+").map(item=>item.trim()).filter(Boolean)});index++;
+  }
+  return scenes;
+}
+
+function screenplaySceneRecords(value){
+  const source=String(value||""),lines=source.split(/\r?\n/),records=[];
+  for(let index=0;index<lines.length;index++){
+    const match=lines[index].trim().match(/^(\d+)\s+(\u5185|\u5916|\u5185\u666f|\u5916\u666f)\s+(.+)$/);if(!match)continue;
+    let end=index+1;while(end<lines.length&&!/^\s*\d+\s+(?:\u5185|\u5916|\u5185\u666f|\u5916\u666f)\s+.+$/.test(lines[end]))end++;
+    records.push({number:Number(match[1]),heading:lines[index].trim(),start:index,end,lines:lines.slice(index,end),tail:match[3].trim()});index=end-1;
+  }
+  return {source,lines,records,prefix:records.length?lines.slice(0,records[0].start):lines};
+}
+
+const scriptScenePlaceKey=value=>String(value||"").replace(sceneTimeSuffixPattern,"").replace(/[\s\u2192\/\uFF0F]/g,"").replace(/(?:\u5185\u90e8|\u5916\u90e8)$/g,"");
+const scriptScenePlaceMatches=(planned,actual)=>{const a=scriptScenePlaceKey(planned),b=scriptScenePlaceKey(actual);return Boolean(a&&b&&(a===b||a.includes(b)||b.includes(a)));};
+
+export function lockScriptSceneHeadings(value,episodePlan){
+  const parsed=screenplaySceneRecords(value);if(!parsed.records.length)return String(value||"");
+  const lines=[...parsed.lines];for(let index=0;index<parsed.records.length;index++)lines[parsed.records[index].start]=parsed.records[index].heading.replace(/^\d+/,String(index+1));
+  return lines.join("\n").trim();
+}
+
+function missingScriptScenePlan(previousOutput,episodePlan){
+  const planned=plannedScriptScenes(episodePlan),parsed=screenplaySceneRecords(previousOutput);if(!planned.length||!parsed.records.length||parsed.records.length>=planned.length)return null;
+  const mapped=new Map();let cursor=0;
+  for(let index=0;index<planned.length&&cursor<parsed.records.length;index++)if(scriptScenePlaceMatches(planned[index].place,parsed.records[cursor].tail)){mapped.set(index,parsed.records[cursor]);cursor++;}
+  if(cursor!==parsed.records.length)return null;
+  const missing=planned.map((scene,index)=>({scene,index})).filter(item=>!mapped.has(item.index));return missing.length?{planned,parsed,mapped,missing}:null;
+}
+
+export function buildMissingScriptScenesPrompt(previousOutput,error,extra={}){
+  if(!String(error||"").includes("\u5267\u672c\u573a\u6b21\u6570\u4e0e\u5267\u60c5\u5b89\u6392\u4e0d\u4e00\u81f4"))return "";
+  const plan=missingScriptScenePlan(previousOutput,extra.episode?.episode_plan);if(!plan)return "";
+  const items=plan.missing.map(({scene,index})=>{const before=[...plan.mapped.entries()].filter(([position])=>position<index).at(-1)?.[1],after=[...plan.mapped.entries()].find(([position])=>position>index)?.[1];return `\u3010\u7f3a\u5931\u573a\u6b21${scene.number}\u3011\n\u9501\u5b9a\u6807\u9898\uff1a${scene.heading}\n\u5fc5\u987b\u8f6c\u6362\u7684\u4e8b\u4ef6\u94fe\uff1a${scene.body}\n\u524d\u4e00\u73b0\u6709\u573a\u6b21\uff1a${before?.lines.join("\n").slice(-700)||"\u65e0"}\n\u540e\u4e00\u73b0\u6709\u573a\u6b21\uff1a${after?.lines.join("\n").slice(0,700)||"\u65e0"}`;}).join("\n\n");
+  return `\u4e0a\u4e00\u7248\u5267\u672c\u5df2\u4fdd\u7559\uff0c\u7a0b\u5e8f\u5df2\u5b9a\u4f4d\u5168\u90e8\u7f3a\u5931\u573a\u6b21\u3002\u53ea\u628a\u4e0b\u5217\u4e8b\u4ef6\u94fe\u8f6c成\u53ef\u62cd\u6444\u7684\u5fc5\u8981\u52a8\u4f5c\u548c\u5b8c\u6574\u5bf9\u767d\uff0c\u4e0d\u5f97\u91cd\u5199\u3001\u590d\u8ff0\u6216\u6539\u52a8\u5df2\u6709\u573a\u6b21\u3002\n\n${items}\n\n\u6bcf\u4e2a\u7f3a\u5931\u573a\u6b21\u4e25\u683c\u8fd4\u56de\uff1a\n\u3010\u8865\u5199\u573a\u6b21N\u3011\nN \u5185/\u5916 \u5730\u70b9 \u65f6\u6bb5\n\u52a8\u4f5c\u6216\u4eba\u7269\uff1a\u5bf9\u767d\n\u3010\u8865\u5199\u7ed3\u675f\u3011\n\u5fc5\u987b\u8986\u76d6\u5168\u90e8\u7f3a\u5931\u573a\u6b21\uff0c\u53ea\u8f93\u51fa\u8865\u5199\u5757\u3002`;
+}
+
+export function applyMissingScriptScenes(previousOutput,patchText,extra={}){
+  const plan=missingScriptScenePlan(previousOutput,extra.episode?.episode_plan);if(!plan)throw new Error("\u65e0\u6cd5\u5b9a\u4f4d\u7f3a\u5931\u573a\u6b21");const patches=new Map();
+  const cleanedPatch=String(patchText||"").replace(/\*\*/g,"").replace(/^\s{0,3}#{1,6}\s+/gm,"");
+  for(const match of cleanedPatch.matchAll(/\u3010\u8865\u5199\u573a\u6b21\s*(\d+)\u3011\s*([\s\S]*?)\s*\u3010\u8865\u5199\u7ed3\u675f\u3011/g)){const number=Number(match[1]),scene=plan.planned.find(item=>item.number===number),lines=match[2].trim().split(/\r?\n/).map(line=>line.trim()).filter(Boolean);if(!scene)continue;if(/^\d+\s+(?:\u5185|\u5916|\u5185\u666f|\u5916\u666f)\s+/.test(lines[0]||""))lines.shift();if(!lines.length)throw new Error(`\u8865\u5199\u573a\u6b21${number}\u6ca1\u6709\u6b63\u6587`);patches.set(number,[scene.heading,...lines]);}
+  const missing=plan.missing.filter(({scene})=>!patches.has(scene.number));if(missing.length)throw new Error(`\u4ecd\u7f3a\u5c11\u8865\u5199\u573a\u6b21\uff1a${missing.map(item=>item.scene.number).join("\u3001")}`);
+  const rebuilt=[...plan.parsed.prefix];for(let index=0;index<plan.planned.length;index++){const existing=plan.mapped.get(index),scene=plan.planned[index];rebuilt.push(...(existing?[scene.heading,...existing.lines.slice(1)]:patches.get(scene.number)));}return rebuilt.join("\n").trim();
+}
+
+function buildForbiddenScriptScenesPrompt(previousOutput,error,extra={}){
+  const reason=String(error||"");
+  if(!reason.includes("出现Skill禁止的情绪、状态、环境、感官或套路描写："))return "";
+  const parsed=screenplaySceneRecords(previousOutput),numbers=[...new Set([...reason.matchAll(/第(\d+)场“/g)].map(match=>Number(match[1])))];
+  const records=parsed.records.filter(record=>numbers.includes(record.number));
+  if(!records.length)return "";
+  return `上一版剧本的场次骨架和其他场次均已通过。只修订下列命中禁用表达的场次，不得输出或改写其他场次。\n\n【逐场问题】\n${reason}\n\n【待修场次】\n${records.map(record=>`【修订场次${record.number}】\n${record.lines.join("\n")}\n【修订结束】`).join("\n\n")}\n\n逐场删除命中的装饰性表达；只有删除会造成关键事件断裂时，才改成最短、可拍摄且不含其他禁用表达的动作。场次标题必须原样保留，人物、对白、事件、顺序、因果和钩子不得改变。严格按上述【修订场次N】与【修订结束】标签返回全部待修场次。`;
+}
+
+function applyForbiddenScriptScenes(previousOutput,patchText){
+  const parsed=screenplaySceneRecords(previousOutput),patches=new Map(),cleaned=cleanEpisodeText(patchText);
+  for(const match of String(cleaned||"").matchAll(/【修订场次\s*(\d+)】\s*([\s\S]*?)\s*【修订结束】/g)){
+    const number=Number(match[1]),record=parsed.records.find(item=>item.number===number),lines=match[2].trim().split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+    if(!record||!lines.length)continue;
+    if(/^\d+\s+(?:内|外|内景|外景)\s+/.test(lines[0]))lines[0]=record.heading;else lines.unshift(record.heading);
+    patches.set(number,lines);
+  }
+  if(!patches.size)throw new Error("禁用表达局部返修未返回可识别的场次");
+  const rebuilt=[...parsed.prefix];
+  for(const record of parsed.records)rebuilt.push(...(patches.get(record.number)||record.lines));
+  return rebuilt.join("\n").trim();
+}
+
+function arrangementSpacetimeIssues(value){
+  const block=String(value||"").match(/【剧情安排】([\s\S]*?)(?=\n【逻辑推理】|$)/)?.[1]||"",lines=block.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  const issues=[];
+  for(let index=0;index<lines.length;index++){
+    const heading=lines[index].match(/^(\d+)\s+(内|外|内景|外景)\s+(.+)$/);if(!heading||!/^[（(]/.test(lines[index+1]||""))continue;
+    const body=[lines[index+1]];
+    const content=body.join(" "),tail=heading[3];
+    if(/(?:^|\s)(?:具体地点|时间|时段)(?:\s|$)/.test(tail))issues.push(`场次${heading[1]}把格式说明当成了真实时空：“${lines[index]}”`);
+    else if(/[\/／]/.test(tail))issues.push(`场次${heading[1]}的地点分隔符尚未完成程序归一：“${lines[index]}”`);
+    else if(tail.split(/\s+/).filter(Boolean).length<2)issues.push(`场次${heading[1]}标题缺少明确时段：“${lines[index]}”`);
+    if(/(?:^|\+)\s*(?:\d+\s+)?(?:内|外|内景|外景)\s+[^+()（）]*/.test(content))issues.push(`场次${heading[1]}把场次标题误写进了圆括号事件链`);
+  }
+  return issues;
+}
+
+function episodeArrangementValidationIssues(value){
+  const text=normalizeEpisodeArrangementText(value).trim(),global=[],local=[];
+  const required=["情绪走向","情绪节点","剧情安排","逻辑推理"],missing=required.filter(x=>!text.includes(`【${x}】`));
+  if(missing.length)global.push(`剧情安排缺少区块：${missing.join("、")}`);
+  const arrangementBlock=text.match(/【剧情安排】\s*([\s\S]*?)(?=【逻辑推理】|$)/)?.[1]||"",arrangementLines=arrangementBlock.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  const scenes=arrangementLines.map((line,index)=>line.match(/^(\d+)\s+(?:内|外|内景|外景)\s+.+/)&&/^[（(]/.test(arrangementLines[index+1]||"")?line.match(/^(\d+)\s+(?:内|外|内景|外景)\s+.+/):null).filter(Boolean);
+  if(!scenes.length){const preview=arrangementBlock.replace(/\s+/g," ").trim().slice(0,180)||"空";global.push(`未识别到剧情安排场次；模型原始剧情安排开头：${preview}`);}
+  if(!/逻辑检查\s*[：:]\s*✓\s*无问题/.test(text))global.push("剧情安排缺少最终逻辑检查结论");
+  if(scenes.length){
+    const sceneNumbers=scenes.map(item=>Number(item[1])),expectedNumbers=scenes.map((_,index)=>index+1);if(sceneNumbers.some((number,index)=>number!==expectedNumbers[index]))local.push(`剧情安排场次编号应依次为${expectedNumbers.join("、")}，实际为${sceneNumbers.join("、")}`);
+    for(const issue of arrangementSpacetimeIssues(text))(/把场次标题误写进了圆括号事件链/.test(issue)?global:local).push(issue);
+    const boundaryIssue=arrangementSceneBoundaryIssue(text);if(boundaryIssue)local.push(boundaryIssue);
+  }
+  return {global,local};
+}
+
+function arrangementSceneBoundaryIssue(value){
+  const block=String(value||"").match(/【剧情安排】([\s\S]*?)(?=\n【逻辑推理】|$)/)?.[1]||"",lines=block.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  const issues=[];
+  for(let index=0;index<lines.length-1;index++){
+    const heading=lines[index].match(/^(\d+)\s+(?:内|外|内景|外景)\s+.+$/),body=lines[index+1].match(/^[（(](.*)[）)]$/);if(!heading||!body)continue;
+    const events=body[1].split("+").map(item=>item.trim()).filter(Boolean);
+    events.forEach((event,eventIndex)=>{if(eventIndex>0&&strongSceneTransitionPattern.test(event))issues.push(`场次${heading[1]}第${eventIndex+1}项“${event}”`);});
+  }
+  return issues.length?`以下事件链中途已经发生明确地点转换，应分别从对应事件开始建立新场次：${issues.join("；")}`:"";
+}
+
+export function normalizeEpisodeArrangementText(value){
+  const text=String(value||"");
+  const blockMatch=text.match(/(【剧情安排】)([\s\S]*?)(?=【逻辑推理】|$)/);
+  if(!blockMatch)return text;
+  const sourceLines=blockMatch[2].split(/\r?\n/);
+  let sceneIndex=0;
+  const renumbered=sourceLines.map((raw,index)=>{
+    const line=raw.trim();
+    const numbered=line.match(/^(?:#{1,6}\s*)?\*{0,2}\s*(?:(?:剧情)?推进段|场景|场次)?\s*([0-9０-９]+|[一二两三])\s*(?:[.\.、：:）)]\s*)?(?:【|\[)?\s*(内景?|外景?)\s*(?:[：:·|｜\s]+)(.+?)\s*(?:】|\])?\s*\*{0,2}$/);
+    const next=sourceLines.slice(index+1).find(item=>item.trim())?.trim()||"";
+    if(!numbered||!/^[（(]/.test(next))return raw;
+    const scene=numbered[2];
+    let tail=numbered[3];
+    const knownTime=tail.match(sceneTimeSuffixPattern)?.[0],parts=tail.split(/\s+/),time=knownTime||parts.at(-1)||"",place=knownTime?tail.slice(0,-knownTime.length).trim():parts.slice(0,-1).join(" ");
+    if(place&&time&&/[\/／]/.test(place))tail=`${place.replace(/[\/／]+/g,"→")} ${time}`;
+    const parsed=Number(String(numbered[1]).replace(/[０-９]/g,ch=>String(ch.charCodeAt(0)-0xfee0)));
+    const chinese={"一":1,"二":2,"两":2,"三":3}[numbered[1]];
+    const number=Number.isFinite(parsed)?parsed:chinese;
+    if(!Number.isInteger(number)||number<1)return raw;
+    sceneIndex+=1;
+    return `${sceneIndex} ${scene.replace("内景","内").replace("外景","外")} ${tail}`;
+  });
+  const normalized=[];
+  for(let index=0;index<renumbered.length;index++){
+    const raw=renumbered[index],line=raw.trim();
+    if(!/^\d+\s+(?:内|外)\s+.+$/.test(line)){normalized.push(raw);continue;}
+    normalized.push(raw);const events=[];let cursor=index+1;
+    while(cursor<renumbered.length){const next=renumbered[cursor].trim();if(!next){cursor+=1;continue;}const body=next.match(/^[（(]([\s\S]*)[）)]$/);if(!body)break;events.push(...body[1].split("+").map(item=>item.trim()).filter(Boolean));cursor+=1;}
+    if(events.length){normalized.push(`（${events.join("+")}）`);index=cursor-1;}
+  }
+  return text.replace(blockMatch[0],`${blockMatch[1]}${normalized.join("\n").replace(/\s+$/,"")}\n`);
+}
+
+function localArrangementRepairSceneNumbers(error){
+  const reason=String(error||"");
+  if(!/(?:事件链中途已经发生明确地点转换|标题缺少明确时段|格式说明当成了真实时空|把场次标题误写进了圆括号事件链|一个标题中混写了多个地点)/.test(reason))return [];
+  return [...new Set([...reason.matchAll(/场次\s*(\d+)/g)].map(match=>Number(match[1])).filter(Number.isInteger))];
+}
+
+function arrangementSceneRecords(value){
+  const match=String(value||"").match(/(【剧情安排】)([\s\S]*?)(?=【逻辑推理】|$)/);if(!match)return null;
+  const lines=match[2].split(/\r?\n/),records=[];
+  for(let index=0;index<lines.length;index++){
+    const heading=lines[index].trim().match(/^(\d+)\s+(?:内|外|内景|外景)\s+.+$/);if(!heading)continue;
+    const bodyIndex=lines.slice(index+1).findIndex(line=>line.trim());if(bodyIndex<0)continue;
+    const actualBodyIndex=index+1+bodyIndex,body=lines[actualBodyIndex].trim();if(!/^[（(][\s\S]*[）)]$/.test(body))continue;
+    records.push({number:Number(heading[1]),start:index,end:actualBodyIndex,text:`${lines[index].trim()}\n${body}`});
+    index=actualBodyIndex;
+  }
+  return {...match,lines,records};
+}
+
+function arrangementBoundaryRepairPlan(previousOutput,error){
+  if(!/事件链中途已经发生明确地点转换/.test(String(error||"")))return null;
+  const parsed=arrangementSceneRecords(previousOutput);if(!parsed)return null;
+  const cutsByScene=new Map();
+  for(const match of String(error).matchAll(/场次\s*(\d+)第\s*(\d+)项/g)){
+    const scene=Number(match[1]),cut=Number(match[2])-1;if(!cutsByScene.has(scene))cutsByScene.set(scene,[]);cutsByScene.get(scene).push(cut);
+  }
+  const repairs=[];
+  for(const [sceneNumber,rawCuts] of cutsByScene){
+    const record=parsed.records.find(item=>item.number===sceneNumber),body=record?.text.split(/\r?\n/).slice(1).join("\n").match(/^[（(]([\s\S]*)[）)]$/);if(!record||!body)continue;
+    const events=body[1].split("+").map(item=>item.trim()).filter(Boolean),cuts=[...new Set(rawCuts)].filter(cut=>cut>0&&cut<events.length).sort((a,b)=>a-b);if(!cuts.length)continue;
+    const positions=[0,...cuts,events.length],chunks=[];
+    for(let index=0;index<positions.length-1;index++)chunks.push(events.slice(positions[index],positions[index+1]));
+    const recordIndex=parsed.records.findIndex(item=>item.number===sceneNumber);
+    repairs.push({sceneNumber,record,chunks,newSegments:chunks.slice(1).map((events,index)=>({id:`${sceneNumber}-${index+1}`,events})),previousHeading:parsed.records[recordIndex-1]?.text.split("\n")[0]||"无",nextHeading:parsed.records[recordIndex+1]?.text.split("\n")[0]||"无"});
+  }
+  return repairs.length?{parsed,repairs}:null;
+}
+
+function buildArrangementBoundaryTitlePrompt(previousOutput,error){
+  const plan=arrangementBoundaryRepairPlan(previousOutput,error);if(!plan)return "";
+  const items=plan.repairs.flatMap(repair=>repair.newSegments.map(segment=>`场次${segment.id}\n原场次标题：${repair.record.text.split("\n")[0]}\n前一场标题：${repair.previousHeading}\n后一场标题：${repair.nextHeading}\n已经由程序截出的事件链：${segment.events.join("+")}`)).join("\n\n");
+  return `程序已经根据验收结果切好了全部漏分场的事件链。你只负责为每个片段填写一个场次标题，禁止改写、复述或返回事件链。\n\n${items}\n\n每个片段只返回一行，严格使用：\n场次原编号-片段号｜内/外 地点 时段\n\n地点必须是片段中人物实际落地并继续发生剧情的位置。事件没有明确跨时段时继承原场次时段；只有事件链明确写出时间变化时才改变。必须覆盖上方每个片段且各返回一次，不要编号、解释、括号、Markdown或任何额外文字。`;
+}
+
+function applyArrangementBoundaryTitles(previousOutput,titleText,error){
+  const plan=arrangementBoundaryRepairPlan(previousOutput,error);if(!plan)throw new Error("无法定位待补标题的转场片段");
+  const titles=new Map();
+  for(const raw of String(titleText||"").split(/\r?\n/)){
+    const line=raw.trim(),match=line.match(/^场次\s*(\d+)-(?:片段)?\s*(\d+)\s*[｜|]\s*(内|外|内景|外景)\s+(.+)$/);if(match)titles.set(`${Number(match[1])}-${Number(match[2])}`,`${match[3].replace("内景","内").replace("外景","外")} ${match[4].trim()}`);
+  }
+  const required=plan.repairs.flatMap(repair=>repair.newSegments.map(segment=>segment.id)),missing=required.filter(id=>!titles.has(id));if(missing.length)throw new Error(`标题补丁缺少转场片段：${missing.join("、")}`);
+  const replacementByScene=new Map();
+  for(const repair of plan.repairs){
+    const blocks=[`${repair.record.text.split("\n")[0]}\n（${repair.chunks[0].join("+")}）`];
+    for(const segment of repair.newSegments)blocks.push(`1 ${titles.get(segment.id)}\n（${segment.events.join("+")}）`);
+    replacementByScene.set(repair.sceneNumber,blocks.join("\n\n"));
+  }
+  const output=[],byStart=new Map(plan.parsed.records.map(record=>[record.start,record]));
+  for(let index=0;index<plan.parsed.lines.length;index++){
+    const record=byStart.get(index);if(!record){output.push(plan.parsed.lines[index]);continue;}
+    output.push(replacementByScene.get(record.number)||record.text);index=record.end;
+  }
+  return normalizeEpisodeArrangementText(String(previousOutput).replace(plan.parsed[0],`${plan.parsed[1]}${output.join("\n")}`));
+}
+
+function buildArrangementHeadingOnlyPrompt(previousOutput,error){
+  if(!/(?:格式说明当成了真实时空|标题缺少明确时段|未填写的格式占位词)/.test(String(error||"")))return "";
+  const parsed=arrangementSceneRecords(previousOutput),numbers=localArrangementRepairSceneNumbers(error);if(!parsed||!numbers.length)return "";
+  const items=parsed.records.filter(record=>numbers.includes(record.number)).map(record=>`场次${record.number}\n原标题：${record.text.split("\n")[0]}\n事件链：${record.text.split(/\r?\n/).slice(1).join(" ")}`).join("\n\n");if(!items)return "";
+  return `只修正下列场次的标题，事件链已经锁定，禁止返回或改写事件链。\n\n${items}\n\n每个场次只返回一行，严格使用“场次原编号｜内/外 地点 时段”。根据事件链填写真实地点；没有明确跨时段依据时继承相邻场次的自然时段。必须覆盖全部列出的场次，不要解释、括号、Markdown或额外文字。`;
+}
+
+function applyArrangementHeadingOnly(previousOutput,titleText,error){
+  const parsed=arrangementSceneRecords(previousOutput),required=localArrangementRepairSceneNumbers(error);if(!parsed||!required.length)throw new Error("无法定位待修标题的场次");
+  const titles=new Map();for(const raw of String(titleText||"").split(/\r?\n/)){const match=raw.trim().match(/^场次\s*(\d+)\s*[｜|]\s*(内|外|内景|外景)\s+(.+)$/);if(match)titles.set(Number(match[1]),`${match[2].replace("内景","内").replace("外景","外")} ${match[3].trim()}`);}
+  const missing=required.filter(number=>!titles.has(number));if(missing.length)throw new Error(`标题补丁缺少场次：${missing.join("、")}`);
+  const output=[],byStart=new Map(parsed.records.map(record=>[record.start,record]));for(let index=0;index<parsed.lines.length;index++){const record=byStart.get(index);if(!record){output.push(parsed.lines[index]);continue;}const body=record.text.split(/\r?\n/).slice(1).join("\n");output.push(titles.has(record.number)?`${record.number} ${titles.get(record.number)}\n${body}`:record.text);index=record.end;}
+  return normalizeEpisodeArrangementText(String(previousOutput).replace(parsed[0],`${parsed[1]}${output.join("\n")}`));
+}
+
+export function buildLocalArrangementRepairPrompt(previousOutput,error,extra={}){
+  const boundaryPrompt=buildArrangementBoundaryTitlePrompt(previousOutput,error);if(boundaryPrompt)return boundaryPrompt;
+  const headingPrompt=buildArrangementHeadingOnlyPrompt(previousOutput,error);if(headingPrompt)return headingPrompt;
+  const parsed=arrangementSceneRecords(previousOutput),numbers=localArrangementRepairSceneNumbers(error);
+  if(!parsed||!numbers.length)return "";
+  const selected=parsed.records.filter(record=>numbers.includes(record.number));if(!selected.length)return "";
+  const context=selected.map(record=>{
+    const position=parsed.records.findIndex(item=>item.number===record.number),before=parsed.records[position-1]?.text.split("\n")[0]||"无",after=parsed.records[position+1]?.text.split("\n")[0]||"无";
+    return `【原场次${record.number}】\n${record.text}\n相邻标题：前=${before}；后=${after}`;
+  }).join("\n\n");
+  const novel=String(extra.episode?.novel||"").trim();
+  return `你正在局部修补一份已经基本合格的剧情安排。只处理下列报错涉及的原场次，绝对不要重写整份文档。\n\n【本轮问题】\n${error}\n\n【待修原场次】\n${context}\n\n【小说原文｜仅用于核对地点、时段和事件先后】\n${novel||"未提供；严格依据待修场次与相邻标题修正"}\n\n【输出协议】\n每个待修原场次必须且只能返回一个替换区块，标记中的数字必须沿用“原场次”编号。一个原场次可以拆成多个新场次；事件原文、顺序和因果不得改变，不得触碰其他场次或其他三个区块。每个新场次严格写两行：第一行“临时序号 内/外 地点 时段”，第二行“（事件+事件）”。\n格式：\n【替换原场次N】\n1 内 地点 时段\n（事件+事件）\n【替换结束】\n若有多个原场次，依次重复上述完整标记。只输出替换区块，不要解释。`;
+}
+
+export function applyLocalArrangementRepair(previousOutput,patchText,error){
+  if(/事件链中途已经发生明确地点转换/.test(String(error||"")))return applyArrangementBoundaryTitles(previousOutput,patchText,error);
+  if(/(?:格式说明当成了真实时空|标题缺少明确时段|未填写的格式占位词)/.test(String(error||"")))return applyArrangementHeadingOnly(previousOutput,patchText,error);
+  const parsed=arrangementSceneRecords(previousOutput),required=localArrangementRepairSceneNumbers(error);if(!parsed||!required.length)throw new Error("无法定位待局部修补的剧情安排场次");
+  const replacements=new Map(),pattern=/【替换原场次\s*(\d+)】\s*([\s\S]*?)\s*【替换结束】/g;
+  for(const match of String(patchText||"").matchAll(pattern)){
+    const number=Number(match[1]),body=match[2].trim(),lines=body.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+    if(!required.includes(number))continue;
+    if(lines.length<2||lines.length%2!==0)throw new Error(`原场次${number}的局部修补格式不完整`);
+    for(let index=0;index<lines.length;index+=2)if(!/^\d+\s+(?:内|外|内景|外景)\s+.+/.test(lines[index])||!/^[（(][\s\S]*[）)]$/.test(lines[index+1]))throw new Error(`原场次${number}的局部修补没有按“标题+事件链”成对返回`);
+    replacements.set(number,lines.join("\n"));
+  }
+  const missing=required.filter(number=>!replacements.has(number));if(missing.length)throw new Error(`局部修补缺少原场次：${missing.join("、")}`);
+  const output=[],byStart=new Map(parsed.records.map(record=>[record.start,record]));
+  for(let index=0;index<parsed.lines.length;index++){
+    const record=byStart.get(index);if(!record){output.push(parsed.lines[index]);continue;}
+    output.push(replacements.get(record.number)||record.text);index=record.end;
+  }
+  const rebuilt=String(previousOutput).replace(parsed[0],`${parsed[1]}${output.join("\n")}`);
+  return normalizeEpisodeArrangementText(rebuilt);
+}
+
+export function consolidateEpisodeArrangementScenes(value,smallSceneLimit=200){
+  const text=String(value||""),blockMatch=text.match(/(【剧情安排】)([\s\S]*?)(?=【逻辑推理】|$)/);if(!blockMatch)return text;
+  const lines=blockMatch[2].split(/\r?\n/).map(line=>line.trim()).filter(Boolean),scenes=[];
+  for(let index=0;index<lines.length;index+=2){
+    const heading=lines[index]?.match(/^(\d+)\s+(内|外)\s+(.+)$/),body=lines[index+1]?.match(/^[（(]([\s\S]*)[）)]$/);if(!heading||!body)return text;
+    const tail=heading[3].trim(),knownTime=tail.match(sceneTimeSuffixPattern)?.[0],parts=tail.split(/\s+/),time=knownTime||parts.at(-1)||"",place=knownTime?tail.slice(0,-knownTime.length).trim():parts.slice(0,-1).join(" ");if(!time||!place)return text;
+    scenes.push({insideOutside:heading[2],place,time,events:body[1].split("+").map(item=>item.trim()).filter(Boolean),han:hanCount(body[1])});
+  }
+  const merged=[];
+  for(const scene of scenes){
+    const previous=merged.at(-1);
+    if(!previous){merged.push({...scene});continue;}
+    const sameFrame=previous.insideOutside===scene.insideOutside&&previous.time===scene.time;
+    const exact=sameFrame&&previous.place===scene.place;
+    const previousEndpoint=previous.place.split("→").at(-1)?.trim()||previous.place;
+    const nested=sameFrame&&(previousEndpoint.includes(scene.place)||scene.place.includes(previousEndpoint));
+    if(exact||(nested&&(previous.han<=smallSceneLimit||scene.han<=smallSceneLimit))){
+      if(!exact&&previousEndpoint!==scene.place)previous.place=`${previous.place}→${scene.place}`;
+      for(const event of scene.events)if(previous.events.at(-1)!==event)previous.events.push(event);
+      previous.han+=scene.han;
+    }else merged.push({...scene});
+  }
+  const arrangement=`\n${merged.map((scene,index)=>`${index+1} ${scene.insideOutside} ${scene.place} ${scene.time}\n（${scene.events.join("+")}）`).join("\n\n")}\n`;
+  return text.replace(blockMatch[0],`${blockMatch[1]}${arrangement}`);
 }
 
 const representationContext=(text,name,index=String(text||"").indexOf(String(name||"")))=>{
@@ -124,29 +475,12 @@ function episodePerformanceIssues(text,extra={}){
   if(premature)issues.push(`主要人物“${premature}”尚未到规划的首次出场集，却已在本集现场行动或说话`);
   if(/[（）()]/.test(String(text)))issues.push("出现任何圆括号或小括号");
   if(extra.sourceNarrativePerson==="third"){const quotedDialogue=lines.find(line=>/[「」“”]/.test(line));if(quotedDialogue)issues.push(`排版未正确换行，残留第三人称小说的对白引号或嵌入式对白：“${quotedDialogue.slice(0,100)}”；识别实际说话人，去掉引号，拆成独立动作行与“人物：台词”行`);}
-  if(sceneLines.length<1||sceneLines.length>9)issues.push(`场次数为${sceneLines.length}，最终剧本必须为1–9个正式场次`);
+  if(sceneLines.length<1)issues.push("最终剧本没有可识别的正式场次");
   const sceneNumbers=sceneLines.map(line=>Number(line.match(/^(\d+)/)?.[1]));
   if(sceneNumbers.some((number,index)=>number!==index+1))issues.push(`正式场次编号不连续：当前为${sceneNumbers.join("、")}；必须从1开始按出现顺序连续编号`);
   const internalSceneMarker=lines.find(line=>/^【(?:内\/外|外\/内|内景?|外景?)\s+.+】$/.test(line));
-  if(internalSceneMarker)issues.push(`仍在使用旧的复合场次内部转场标记：“${internalSceneMarker}”；地点或主时间变化必须拆成独立编号的正式场次`);
-  for(const group of plannedCompositeScenes(extra.episode?.episode_plan)){
-    const locationIndexes=group.locations.map(location=>sceneLines.findIndex(line=>line.includes(location)));
-    if(locationIndexes.some(index=>index<0)||locationIndexes.some((index,i)=>i>0&&index<=locationIndexes[i-1]))issues.push(`未正确拆分剧情安排推进段${group.number}的地点路线“${group.locations.join("→")}”：每个地点必须按既定顺序成为独立编号的正式场次，不得合并、遗漏或颠倒`);
-  }
-  if(extra.shortSceneHeading){const wrong=sceneLines.find(line=>/^\d+\s+(?:内景|外景)\s+|\s+(?:白天|夜晚)$/.test(line));if(wrong)issues.push(`默认模板场次标题格式错误：“${wrong}”；应使用“序号 外/内 地点 日/夜”`);}
-  const crowdedLine=lines.find(line=>{
-    if(/^EP\s*\d+/i.test(line)||scenePattern.test(line))return false;
-    const startsWithDialogue=/^[\p{Script=Han}A-Za-z0-9·]{1,20}(?:\s+V\.O\.|\s+OS)?：/u.test(line);
-    const prefixes=[...line.matchAll(/(?:^|[。！？!?]\s*)([\p{Script=Han}A-Za-z0-9·]{1,20})(?:\s+V\.O\.|\s+OS)?：/gu)];
-    if(!startsWithDialogue){
-      const narrativeColon=/^(?:那|这)?.*(?:意思很清楚|写着|显示|内容如下|结果如下|提示如下)$/;
-      return prefixes.some(match=>!narrativeColon.test(match[1]||""));
-    }
-    if(/^系统音：/.test(line))return false;
-    const metadata=/^(?:当前|剩余|累计|获得|消耗|任务|事件|状态|奖励|积分|余额|好感度|倒计时|等级|体力|战力|生命值|完成度)/;
-    return prefixes.slice(1).some(match=>!metadata.test(match[1]||""));
-  });
-  if(crowdedLine)issues.push(`排版未正确换行，同一行出现多个人物台词或动作与台词混排：“${crowdedLine.slice(0,100)}”`);
+  if(internalSceneMarker)issues.push(`仍在使用旧的内部转场标记：“${internalSceneMarker}”；必须直接执行剧情安排中已经独立编号的场次`);
+  if(extra.shortSceneHeading){const wrong=sceneLines.find(line=>/^\d+\s+(?:内景|外景)\s+/.test(line));if(wrong)issues.push(`默认模板场次标题格式错误：“${wrong}”；应使用“序号 外/内 地点 具体时段”，并保留剧情安排已经确定的自然时段`);}
   for(let i=1;i<sceneLines.length;i++){const a=sceneLines[i-1].replace(/^\d+\s+/,""),b=sceneLines[i].replace(/^\d+\s+/,"");if(a===b){issues.push(`同一地点和时间被重复拆场：“${b}”`);break;}}
   const mentalPattern=/(?:心里一沉|心中一沉|心里一凛|心中一凛|心里[^。！？]{0,8}咯噔(?:一下)?|心中[^。！？]{0,8}咯噔(?:一下)?|咯噔(?:一下)?|心里[^。！？]{0,12}刺痛|暗自|内心|误以为|以为|意识到|明白(?:了)?|觉得|认为|(?:眼神|表情|动作)[^。！？]{0,16}(?:意思|表明|说明)|意思很清楚)/;
   const mental=actionSentences.find(line=>mentalPattern.test(line));
@@ -171,9 +505,16 @@ function episodePerformanceIssues(text,extra={}){
   const aiBodyClichePattern=/(?:指节(?:都|已经|微微)?发白|手指关节(?:都|已经|微微)?发白|青筋(?:根根)?暴起|指甲[^。！？]{0,16}掐进掌心|掌心[^。！？]{0,12}(?:渗出)?血丝|手背[^。！？]{0,12}(?:筋络|青筋)[^。！？]{0,8}(?:凸起|暴起))/;
   const aiBodyCliche=actionSentences.find(line=>aiBodyClichePattern.test(line));
   if(aiBodyCliche)issues.push(`出现套路化的 AI 身体细节：“${aiBodyCliche.slice(0,100)}”（命中：${aiBodyCliche.match(aiBodyClichePattern)?.[0]}）；删除这类装饰性情绪反应。只保留真正影响事件的动作，不补写替代性神态或身体细节，不改变剧情及其他合格内容`);
-  const forbiddenPattern=/(?:瞳孔骤缩|眼睛一亮|眼中闪过|眼神一沉|眼神一凛|眼里闪着[^。！？]{0,16}光|眼里[^。！？]{0,12}看热[闹鬧闘]|嘴角(?:微微)?上扬|眉头一皱|脸(?:色)?一阵青一阵白|脸(?:色)?青一阵白一阵|脸色(?:骤然|猛地)?一变|倒吸凉气|攥紧拳头|咬牙|打颤|沉默|不说话|盯着看|显得|似乎|好像|仿佛|闻到|听得|看得|得像[^。！？]{1,24}|像.+一样|夕阳|余晖|夜幕降临|天色渐暗|太阳落山|路灯亮|风像|寒气逼人)/;
-  const forbidden=actionSentences.find(line=>forbiddenPattern.test(line));
-  if(forbidden)issues.push(`出现Skill禁止的情绪、状态、环境、感官或套路描写：“${forbidden.slice(0,100)}”（命中：${forbidden.match(forbiddenPattern)?.[0]}）`);
+  const forbiddenPattern=/(?:瞳孔骤缩|眼睛一亮|眼中闪过|眼神一沉|眼神一凛|眼里闪着[^。！？]{0,16}光|眼里[^。！？]{0,12}看热[闹鬧闘]|嘴角(?:微微)?上扬|眉头一皱|脸(?:色)?一阵青一阵白|脸(?:色)?青一阵白一阵|脸色(?:骤然|猛地)?一变|倒吸凉气|攥紧拳头|咬牙|打颤|不说话|盯着看|显得|似乎|好像|仿佛|闻到|听得|看得|得像[^。！？]{1,24}|像.+一样|夕阳|余晖|夜幕降临|天色渐暗|太阳落山|路灯亮|风像|寒气逼人)/;
+  let currentScene=0;const forbidden=[];
+  for(const line of lines){
+    const heading=line.match(/^(\d+)\s+(?:内\/外|外\/内|内景?|外景?)\s+.+/);if(heading){currentScene=Number(heading[1]);continue;}
+    if(/^EP\s*\d+/i.test(line)||/^.{1,30}(?:\s+V\.O\.|\s+OS)?\s*：/.test(line))continue;
+    for(const sentence of line.split(/(?<=[。！？!?])/).map(value=>value.trim()).filter(Boolean)){
+      const hit=sentence.match(forbiddenPattern)?.[0];if(hit)forbidden.push({scene:currentScene||1,sentence,hit});
+    }
+  }
+  if(forbidden.length)issues.push(`出现Skill禁止的情绪、状态、环境、感官或套路描写：${forbidden.map(item=>`第${item.scene}场“${item.sentence.slice(0,100)}”（命中：${item.hit}）`).join("；")}`);
   const summaryAction=actionLines.find(line=>{
     if(!/(?:走了|来了|离开了|离去了)[。！!]?$/.test(line))return false;
     const visibleEntranceOrExit=/(?:头也不回|转身|回头|推开|拨开|穿过|越过|挤开|冲|跑|快步|大步|拖|架|押|扶|抬|抱|扛|拉着|拽着|带着|跟着|钻进|跳下|退到|逃出|走进|走出|走向|走回|来到|回到|进入|退出|上车|下车|进门|出门|向\S{1,12}|往\S{1,12})/;
@@ -185,6 +526,14 @@ function episodePerformanceIssues(text,extra={}){
   const invalidVo=protagonist?voSpeakers.find(name=>name!==protagonist):new Set(voSpeakers).size>1?voSpeakers[0]:"";
   if(invalidVo)issues.push(`非主角使用V.O./OS：“${invalidVo}”；只有${protagonist||"主角"}可以使用`);
   if(protagonist){
+    const escapedProtagonist=protagonist.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+    const thirdPersonSelfVo=lines.find(line=>{
+      if(!line.startsWith(`${protagonist} V.O.：`)&&!line.startsWith(`${protagonist} OS：`))return false;
+      const content=line.slice(line.indexOf("：")+1);
+      const namesSelf=new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapedProtagonist}(?:本人|自己|的|要|会|能|不能|必须|已经|还|正|却|也|绝不|从未|没有|不该|该)`,"u").test(content);
+      return namesSelf;
+    });
+    if(thirdPersonSelfVo)issues.push(`主角V.O.仍用第三人称称呼主角本人：“${thirdPersonSelfVo.slice(0,100)}”；保持原意，只把主角自称改成第一人称“我/我的”，指向其他人物的代词不得改动`);
     const borrowedThreat=lines.find(line=>line.startsWith(`${protagonist} V.O.：`)&&/(?:你敢|你要是|否则|不然|给我|别想|你妈|你爸|你家人)/.test(line));
     if(borrowedThreat)issues.push(`主角V.O.替其他人物转述或脑补威胁：“${borrowedThreat.slice(0,100)}”；应删除该脑补内容，不得改成V.O.或新增现场对白`);
   }
@@ -239,9 +588,13 @@ function unauthorizedGoldenKnowledgeIssue(text,extra={},stage="episode"){
   return "";
 }
 
-function validatePlainOutput(stage,output,extra={}){
-  const text=String(output||"").trim(),count=hanCount(text);
+export function validatePlainOutput(stage,output,extra={}){
+  const text=(stage==="episode_arrangement"?normalizeEpisodeArrangementText(output):String(output||"")).trim(),count=hanCount(text);
   if(!text)return `${stage==="episode_novel"?"小说":stage==="episode_arrangement"?"剧情安排":"剧本"}正文为空`;
+  if(stage==="episode"){
+    const structural=episodePerformanceIssues(text,extra).filter(issue=>/(?:最终剧本没有可识别的正式场次|正式场次编号不连续)/.test(issue));
+    if(structural.length)return structural.join("；");
+  }
   if(Number(extra.minEffectiveCharacters)>0&&count<Number(extra.minEffectiveCharacters))return `有效字符 ${count}，少于最低要求 ${extra.minEffectiveCharacters}`;
   if(Number(extra.maxEffectiveCharacters)>0&&count>Number(extra.maxEffectiveCharacters))return `有效字符 ${count}，超过最高要求 ${extra.maxEffectiveCharacters}`;
   if(stage==="episode_novel"){
@@ -269,10 +622,7 @@ function validatePlainOutput(stage,output,extra={}){
     if(unsupported.length)return `小说连续性概要的精确锚点擅自增加了最终事件账本不支持的时间或数值：${unsupported.join("、")}`;
   }
   if(stage==="episode_arrangement"){
-    const required=["情绪走向","情绪节点","剧情安排","逻辑推理"];
-    const missing=required.filter(x=>!text.includes(`【${x}】`));if(missing.length)return `剧情安排缺少区块：${missing.join("、")}`;
-    const scenes=[...text.matchAll(/^\s*\d+\s+(?:内|外|内景|外景)\s+.+/gm)];if(scenes.length<1||scenes.length>3)return `剧情安排场次数为${scenes.length}，必须严格为1–3场`;
-    if(!/逻辑检查\s*[：:]\s*✓\s*无问题/.test(text))return "剧情安排缺少最终逻辑检查结论";
+    const issues=episodeArrangementValidationIssues(text);if(issues.global.length)return issues.global.join("；");if(issues.local.length)return issues.local.join("；");
   }
   if(stage==="episode"){
     const issues=episodePerformanceIssues(text,extra);if(issues.length)return issues.join("；");
@@ -284,7 +634,13 @@ function validatePlainOutput(stage,output,extra={}){
 }
 function repairInstruction(stage,error,extra={}){
   const reason=String(error||"格式错误");
-  if(stage==="episode"&&/(?:拆分剧情安排推进段|复合场次内部转场标记|正式场次编号不连续)/.test(reason))return `上一版只需修正分场结构：${reason}。剧情安排编号只是按顺序组织剧情的推进段；遇到地点或主时间变化，改成独立编号的正式场次，并从1开始连续编号。删除复合地点总标题和方括号内部转场标记，将原有内容按既定地点顺序移动到对应场次；不得改变、删减或扩写剧情、对白、事件顺序和钩子。只输出修订后的完整剧本。`;
+  if(stage==="episode_arrangement"&&/场次编号应依次为/.test(reason))return `上一版只需修正【剧情安排】的场次编号：${reason}。按现有场景先后从1开始连续重编号，不得修改地点、时段、事件、顺序、因果和cliffhanger。只输出四个完整区块。`;
+  if(stage==="episode_arrangement"&&/未填写的格式占位词/.test(reason))return `上一版只需修正【剧情安排】的场次标题：${reason}。根据该场已有事件填入真正的地点和实际时段，不得再输出“具体地点”“时间”“时段”。只改错误标题，其他内容原样保留。只输出四个完整区块。`;
+  if(stage==="episode_arrangement"&&/标题缺少明确时段/.test(reason))return `上一版只需定点修正这个场次标题：${reason}。根据小说原文和相邻场次，在原标题末尾补充有依据的具体或自然时间表达；不得修改场次编号、内外景、地点、圆括号事件链以及其他三个区块。只输出修正后的四个完整区块。`;
+  if(stage==="episode_arrangement"&&/事件链中途已经发生明确地点转换/.test(reason))return `上一版只需一次性修正下列全部漏切的场次边界：${reason}。逐项保留事件原文与原顺序，把每个命中的地点转换事件及其后在新地点发生的事件移入对应独立场次；根据小说填写各新场次的内外景、地点和时段，随后由程序统一整理编号。必须处理清单中的每一项，不得只修第一项；不得删减、扩写或重新设计其他场次、情绪区块、逻辑推理和cliffhanger。只输出修正后的四个完整区块。`;
+  if(stage==="episode_arrangement"&&/(?:格式说明当成了真实时空|场次标题误写进|一个标题中混写了多个地点)/.test(reason))return `上一版剧情内容不变，只修正【剧情安排】的场次结构：${reason}。每个真实地点单独建立一场，标题为“序号 外/内 地点 时段”，下一行只放该地点实际发生的圆括号加号事件链；禁止箭头、斜杠和并列地点。按小说原顺序连续编号，不新增、删除或重排事件，只输出四个完整区块。`;
+  if(stage==="episode_arrangement"&&/缺少最终逻辑检查结论/.test(reason))return `上一版的剧情内容和四个区块全部保持不变；只在【逻辑推理】区块末尾另起一行补上完全一致的“逻辑检查：✓ 无问题”。不要删除、改写或重新生成其他文字，只输出补齐后的四个完整区块。`;
+  if(stage==="episode"&&/(?:剧情安排不一致|未对应剧情安排地点|内部转场标记|正式场次编号不连续)/.test(reason))return `上一版只需修正分场结构：${reason}。剧情安排中的每个编号场次直接对应剧本中的同序号场次；按既定地点、时段和事件链逐场转换，不得合并、遗漏、换序或擅自新增场次，不得改变对白、事件、因果和钩子。只输出修订后的完整剧本。`;
   if(["episode_novel","episode"].includes(stage)&&/整(?:章|集)没有任何/.test(reason))return `上一版的问题是：${reason}。保留全部既有事件、顺序、因果、人物、能力、道具和钩子，只在现有行动节点中补入少量有行动目的的直接语言。优先使用已经在场或已有依据的说话者；若只有主角，可让主角对眼前目标或危险外说、自言自语，或用一句必要的主角${stage==="episode"?"V.O.":"直接内心语言"}表达会改变下一步行动的判断。不得新增人物、联系人、广播事实、系统激活、人物知情或新事件，不得让无语言能力的对象突然说话，也不得用语言复述已写清的动作和背景。只输出修订后的完整${stage==="episode"?"剧本":"小说"}。`;
   if(stage==="episode_novel"&&/小说锁定为(?:第一|第三)人称/.test(reason)){
     return extra.narrativePerson==="third"
@@ -292,6 +648,7 @@ function repairInstruction(stage,error,extra={}){
       : `错误：${reason}。只修正叙述段的人称，把主角叙述统一为第一人称限知视角并以“我”自称；不得用主角姓名或“他、她”替代叙述者。不得修改「」内的任何对白。不得进入其他人物内心，不改事件、顺序、因果、人物认知和钩子。只输出修订后的完整小说。`;
   }
   if(["episode_novel","episode"].includes(stage)&&/不是对应金手指的持有者.*无获知依据/.test(reason))return `错误：${reason}。只修这一处越权知情，不改其他剧情、事件顺序和钩子。该人物既不是对应金手指的当前持有者，也没有获知依据：删除其对系统、弹幕、异能、血统、任务、积分、规则或能力来源的提及、判断和追问；只允许其根据现场亲眼可见的行为、现实证据与结果作出中性反应。不得改成暗示其仍然知情的同义句，也不得新增一场解释。只输出修订后的完整正文。`;
+  if(stage==="episode"&&/主角V\.O\.仍用第三人称称呼主角本人/.test(reason))return `错误：${reason}。只修正命中的主角 V.O.：保持原意，把其中对主角本人的自称改成“我/我的”；指向其他人物的姓名和“他/她”保持不变。不得修改其他动作、对白、事件和场次。只输出修订后的完整剧本。`;
   if(stage==="episode"&&/残留第三人称小说的对白引号或嵌入式对白/.test(reason))return `错误：${reason}。只做第三人称小说对白的剧本格式拆解，不改剧情、事件顺序、人物、台词原意和钩子。逐句识别小说中真正说出口的内容：去掉「」、“”及英文双引号，把“人物动作接台词”“台词后接人物说话或动作”“多个说话人与动作挤在同段”等结构拆开；动作独立成行，每句对白统一写成“人物：台词”并独立成行。不得遗漏原有对白，不得把旁白或未说出口的心理改成对白。只输出修订后的完整剧本。`;
   if(stage==="episode"&&/(?:场次标题格式|排版未正确换行)/.test(reason)&&/(?:不可拍摄|心理判断|作者解释|作者交代|矛盾摘要|无效迟疑|内心独白错误|动作段转述|Skill禁止|环境|感官|套路描写|非主角使用V\.O|主角V\.O\.替其他人物)/.test(reason))return `错误：${reason}。本轮同时修正命中的语义违规和排版，不得只换行后原样保留违规文字。一，删除摄影机无法证明的心理判断和作者解释；“某人看了主角一眼，那眼神的意思是：你敢……/你要是……/否则……”属于未说出口的脑补意图，整段及冒号后的内容直接删除，既不能改成主角V.O.，也不能新增为对方对白，因为这会改变是否说出口的事件状态。二，“得像……”等比喻直接删除，不用另一种比喻替换；“心里一凛/心中一凛”本身删除，若该人物是主角且紧随其后有观众必须知道的主角自身认知或疑问，只把该信息改成一句主角V.O.，不得写“我心里一凛”；若不是主角，禁止转成V.O.，必要信息改为该人物现场对白或改变局面的可见动作，否则删除。三，任何非主角V.O./OS都改成现场对白、可见动作或删除，不得转交给主角；主角V.O.也不得替别人复述或脑补台词。四，把动作段中原本明确说出口的语言展开成现场对白；其他环境、感官、套路动作和无效迟疑按错误提示删除。五，EP标题、场次标题、每句人物台词各自单独一行，动作与台词拆行，同一行不得出现两个人物台词；前后两句台词之间的连续动作合并为一个动作段。不得改变事件顺序、人物、已有合格对白和钩子，不得新增情节。只输出修订后的完整剧本。`;
   if(stage==="episode"&&/(?:场次标题格式|排版未正确换行)/.test(reason))return `错误：${reason}。只修排版与场次标题，不改任何文字内容、事件、人物或钩子。默认模板场次标题统一改为“序号 外/内 地点 日/夜”；EP标题、每个场次标题、每句人物台词必须各自单独一行，动作与台词必须拆行；但夹在前后两句台词之间的连续动作必须合并成一个动作段、只占一行。同一行的多个人物台词必须拆行。只输出重新排版后的完整剧本。`;
@@ -303,7 +660,8 @@ function repairInstruction(stage,error,extra={}){
   if(/超过|超出|过长/.test(reason)){
     const targetMin=Number(extra.creativeMinCharacters)||Math.max(Number(extra.minEffectiveCharacters)||1000,(Number(extra.maxEffectiveCharacters)||2000)-300);
     const targetMax=Number(extra.creativeMaxCharacters)||Math.max(targetMin,(Number(extra.maxEffectiveCharacters)||2000)-100);
-    return `上一版篇幅过长：${reason}。这是删冗余，不是重新创作。严格沿用上一版的事件顺序、人物、因果和钩子；删除重复解释、重复情绪、无效环境、同义动作，合并表达同一信息的对白，只保留每个关键事件成立所需的最短有效内容。按纯汉字统计，必须压缩到 ${targetMin}–${targetMax} 字。不得新增情节，不得用改写后的长句补回删掉的字数。只输出压缩后的完整正文。`;
+    const screenplayPriority=stage==="episode"?`篇幅超限时，优先缩略或删除非必要的非对白内容：环境与感官渲染、重复神态和身体反应、对白已经表达的信息、无效走动观察停顿、作者解释和前情复述直接删除；连续但必要的进出场、打斗追逐过程和辅助动作压成最短可拍摄的一句。非对白必须保留演员必须执行且会改变局面、交代关键空间关系、完成道具流转、触发冲突或呈现事件结果的动作。不得靠删减威胁、条件、反驳、揭露、选择、结果等关键对白来凑字数，也不得删减剧情安排事件或集尾钩子。`:`删除重复解释、重复情绪、无效环境和同义动作，合并表达同一信息的对白，只保留每个关键事件成立所需的最短有效内容。`;
+    return `上一版篇幅过长：${reason}。这是删冗余，不是重新创作。严格沿用上一版的事件顺序、人物、因果和钩子；${screenplayPriority}按纯汉字统计，必须压缩到 ${targetMin}–${targetMax} 字。不得新增情节，不得用改写后的长句补回删掉的字数。只输出压缩后的完整正文。`;
   }
   if(/少于|不足|过短/.test(reason))return `上一版篇幅不足：${reason}。只扩充关键冲突回合、因果和必要细节，不增加新支线，严格落在 ${extra.minEffectiveCharacters||1500}–${extra.maxEffectiveCharacters||2000} 个纯汉字。只输出修订后的完整正文。`;
   return `上一版未通过校验：${reason}。只针对该问题修订上一版，保持已经正确的剧情、顺序、人物和钩子不变；不要从头另写。只输出修订后的完整正文。`;
@@ -314,8 +672,13 @@ function compactRevisionPrompt(stage,previousOutput,revision,extra={}){
   const perspectiveLock=stage==="episode_novel"?`\n【叙事人称｜修订时不得改变】${extra.narrativePerson==="third"?"第三人称限知；叙述使用主角姓名及他/她，对白中的我不改":"第一人称限知；主角叙述使用我，对白不改"}`:"";
   const descriptionLock=stage==="episode_novel"?`\n【40字硬限制｜不得削减剧情】每个自然段不得超过40个汉字。优先缩短句式或按自然戏剧节拍换段，不得删掉有效事件、冲突升级、人物感受、对白回合、现实后果、反扑和选择；环境、外貌、感官和心理可以简短服务剧情，但不连续铺陈或重复证明同一状态。`:"";
   const localConsistencyLock=stage==="episode_novel"?`\n【本章事实一致性】后文不得为了升级冲突，临时改写前文已建立的身份、能力、知情、物品归属、事件原因、损失对象、关系、数字或动机；只有本集大概内容或必须发生明确安排、且正文给出获知证据时才允许揭露新真相。`:"";
+  const screenplaySceneLock=stage==="episode"&&!/(?:篇幅|有效字符|字数|超过模板上限)/.test(String(revision||""))?(()=>{
+    const scenes=screenplaySceneRecords(previousOutput).records;
+    if(!scenes.length)return "";
+    return `\n【当前剧本已确认骨架｜本轮修订必须完整保留】\n${scenes.map((scene,index)=>scene.heading.replace(/^\d+/,String(index+1))).join("\n")}\n这份骨架取自已经生成的当前剧本，不再机械套用剧情安排场次数。必须逐场完整输出且每个标题只出现一次；任何字数、排版或文句修订都只能修改场内表达，不得删除、合并、换序、新增场次或把事件挪到别场。`;
+  })():"";
   return `你是${kind}定向修订器。不要重新创作，只修改明确指出的问题。
-${perspectiveLock}${descriptionLock}${localConsistencyLock}
+${perspectiveLock}${descriptionLock}${localConsistencyLock}${screenplaySceneLock}
 
 【必须发生】${episode.required_plot||"按上一版完整保留"}
 【不得揭示】${episode.must_not_reveal||"无"}
@@ -388,35 +751,57 @@ export async function generate({ stage, project, prompt, extra = {}, schema = nu
     return { provider: "mock", model: "local-demo", output: mock(stage, project, extra), usage: {} };
   }
   schema ||= schemas[stage];
-  const timeoutMs=stage==="outline"?480000:stage==="outline_spine"?300000:["outline_dramatic","outline_finalize","outline_chunk"].includes(stage)?240000:stage==="episode"?180000:stage==="episode_novel"?180000:stage==="episode_plan_text"?90000:stage==="episode_boundary_text"?90000:["state_update","memory_characters","memory_events"].includes(stage)?90000:["scene_treatment_text","episode_boundaries_text","character_image_prompt","episode_novel_summary"].includes(stage)?60000:180000;
+  const timeoutMs=stage==="outline"?480000:stage==="outline_spine"?300000:["outline_dramatic","outline_finalize","outline_chunk"].includes(stage)?240000:stage==="episode"?180000:stage==="episode_novel"?180000:stage==="episode_plan_text"?90000:stage==="episode_boundary_text"?90000:["state_update","memory_characters","memory_events"].includes(stage)?90000:["memory_links","scene_treatment_text","episode_boundaries_text","character_image_prompt","episode_novel_summary"].includes(stage)?60000:180000;
   const client = new OpenAI({ apiKey:provider.apiKey, ...(provider.baseUrl ? { baseURL:provider.baseUrl } : {}), timeout:timeoutMs, maxRetries:0 });
   if (provider.protocol === "responses") {
-    let lastError,previousOutput="";
-    const responseAttempts=stage==="episode"?5:stage==="episode_novel"?5:2;
+    let lastError,previousOutput="",arrangementPatchBasis="",arrangementPatchStart=2;
+    const responseAttempts=stage==="episode"?5:stage==="episode_novel"?5:stage==="episode_arrangement"?5:2;
     for(let attempt=0;attempt<responseAttempts;attempt++){
-      await onAttempt?.({attempt:attempt+1,total:responseAttempts,retry:attempt>0,lastError:lastError?.message||""});
+      const arrangementPatch=stage==="episode_arrangement"&&attempt>=arrangementPatchStart;
+      if(arrangementPatch&&attempt-arrangementPatchStart>=3)break;
+      await onAttempt?.({attempt:attempt+1,total:responseAttempts,retry:attempt>0,lastError:lastError?.message||"",phase:arrangementPatch?"patch":"full",phaseAttempt:arrangementPatch?attempt-arrangementPatchStart+1:attempt+1,phaseTotal:arrangementPatch?3:2});
       const revision=attempt?repairInstruction(stage,lastError?.message,extra):"";
-      const input=attempt&&previousOutput?(["episode_novel","episode"].includes(stage)?compactRevisionPrompt(stage,previousOutput,revision,extra):`${prompt}\n\n【上一版待修正文】\n${previousOutput}\n\n【本次定向修订】\n${revision}`):prompt;
+      if(arrangementPatch&&!arrangementPatchBasis)arrangementPatchBasis=lastError?.message||"";
+      if(arrangementPatch&&episodeArrangementValidationIssues(previousOutput).global.length)break;
+      const localRepairPrompt=arrangementPatch&&previousOutput?buildLocalArrangementRepairPrompt(previousOutput,arrangementPatchBasis,extra):"";
+      if(arrangementPatch&&!localRepairPrompt)break;
+      const scriptRepairPrompt=stage==="episode"&&attempt&&previousOutput?buildMissingScriptScenesPrompt(previousOutput,lastError?.message,extra):"";
+      const forbiddenSceneRepairPrompt=stage==="episode"&&attempt&&previousOutput&&!scriptRepairPrompt?buildForbiddenScriptScenesPrompt(previousOutput,lastError?.message,extra):"";
+      const input=localRepairPrompt||scriptRepairPrompt||forbiddenSceneRepairPrompt||(attempt&&previousOutput?(["episode_novel","episode"].includes(stage)?compactRevisionPrompt(stage,previousOutput,revision,extra):`${prompt}\n\n【上一版待修正文】\n${previousOutput}\n\n【本次定向修订】\n${revision}`):prompt);
       const request = { model:provider.model, input };
       if(schema)request.text={format:{type:"json_schema",name:`${stage}_result`,strict:false,schema}};
       try{
         const response=await client.responses.create(request,signal?{signal}:undefined),content=response.output_text||"";
         const plain=["episode_novel","episode_arrangement","episode_novel_summary"].includes(stage)?content.replace(/<think>[\s\S]*?<\/think>/gi,"").replace(/^```(?:text|plaintext|markdown)?\s*/i,"").replace(/\s*```$/i,"").trim():content.trim();
-        const output=schema?JSON.parse(content):stage==="episode"?cleanEpisodeText(content):stage==="episode_novel"?normalizeNovelText(plain):plain;previousOutput=typeof output==="string"?output:content;
-        if(!schema){const error=validatePlainOutput(stage,output,extra);if(error)throw new Error(error);}
+        const output=schema?JSON.parse(content):stage==="episode"?lockScriptSceneHeadings(scriptRepairPrompt?applyMissingScriptScenes(previousOutput,plain,extra):forbiddenSceneRepairPrompt?applyForbiddenScriptScenes(previousOutput,plain):cleanEpisodeText(content),extra.episode?.episode_plan):stage==="episode_novel"?normalizeNovelText(plain):stage==="episode_arrangement"&&localRepairPrompt?applyLocalArrangementRepair(previousOutput,plain,arrangementPatchBasis):stage==="episode_arrangement"?normalizeEpisodeArrangementText(plain):plain;previousOutput=typeof output==="string"?output:content;
+        if(!schema){const error=validatePlainOutput(stage,output,extra);if(error){
+          if(stage==="episode_arrangement"){
+            arrangementPatchBasis=error;
+            if(attempt===0&&!episodeArrangementValidationIssues(output).global.length&&buildLocalArrangementRepairPrompt(output,error,extra))arrangementPatchStart=1;
+          }
+          throw new Error(error);
+        }}
         return {provider:provider.id,model:provider.model,output,usage:response.usage||{}};
       }catch(error){lastError=error;if(signal?.aborted)throw error;}
     }
-    throw new Error(`${provider.label} 连续${responseAttempts}次未生成合格内容：${lastError?.message||"未知错误"}`);
+    throw new Error(stage==="episode_arrangement"?`${provider.label} 完整生成最多2轮、轻量补丁最多3轮后仍未通过：${lastError?.message||"未知错误"}`:`${provider.label} 连续${responseAttempts}次未生成合格内容：${lastError?.message||"未知错误"}`);
   }
   const jsonInstruction = schema ? `\n\n必须只输出一个有效 JSON 对象，不要输出 Markdown 代码块或解释。JSON Schema：\n${JSON.stringify(schema)}` : "";
-  let response,output,lastError;
-  const maxAttempts=stage==="episode"?5:stage==="episode_novel"?5:2;
+  let response,output,lastError,arrangementPatchBasis="",arrangementPatchStart=2;
+  const maxAttempts=stage==="episode"?5:stage==="episode_novel"?5:stage==="episode_arrangement"?5:stage==="memory_links"?1:2;
   for(let attempt=0;attempt<maxAttempts;attempt++){
-    await onAttempt?.({attempt:attempt+1,total:maxAttempts,retry:attempt>0,lastError:lastError?.message||""});
+    const arrangementPatch=stage==="episode_arrangement"&&attempt>=arrangementPatchStart;
+    if(arrangementPatch&&attempt-arrangementPatchStart>=3)break;
+    await onAttempt?.({attempt:attempt+1,total:maxAttempts,retry:attempt>0,lastError:lastError?.message||"",phase:arrangementPatch?"patch":"full",phaseAttempt:arrangementPatch?attempt-arrangementPatchStart+1:attempt+1,phaseTotal:arrangementPatch?3:2});
     const outputLimit=stage==="outline"?32000:stage==="outline_spine"?18000:["outline_dramatic","outline_finalize","outline_chunk"].includes(stage)?9000:stage==="planning"?2500:stage==="planning_section"?1200:stage==="episode_boundaries_text"?1200:stage==="episode_boundary_text"?(extra.boundaryField==="required_plot"?5000:1200):stage==="episode_plan_text"?2500:stage==="scene_treatment_text"?1200:stage==="state_update"?2000:stage==="character_image_prompt"?1600:stage==="episode_novel_summary"?1200:stage==="memory_links"?2500:stage==="memory_dimensions"?4500:stage==="memory_events"?6000:stage==="memory_characters"?4500:stage==="characters"?6000:stage==="episode_novel"?5000:stage==="episode"?6000:8000;
     const retryInstruction=attempt?(schema?(/timed out|timeout|超时/i.test(lastError?.message||"")?"上一次请求超时且没有取得可用输出。本次继续执行同一任务，保持范围不变，直接完整返回要求的 JSON。":"上一次输出无法解析。这一次请特别检查所有引号、逗号、数组和对象是否完整闭合。\n上一轮问题："+(lastError?.message||"未知")):repairInstruction(stage,lastError?.message,extra)):"";
-    const messages=attempt&&typeof output==="string"&&output.trim()?(["episode_novel","episode"].includes(stage)?[{role:"user",content:compactRevisionPrompt(stage,output,retryInstruction,extra)}]:[{role:"user",content:prompt+jsonInstruction},{role:"assistant",content:output},{role:"user",content:retryInstruction}]):[{role:"user",content:prompt+jsonInstruction+(retryInstruction?`\n\n${retryInstruction}`:"")}];
+    const previousOutput=typeof output==="string"?output:"";if(arrangementPatch&&!arrangementPatchBasis)arrangementPatchBasis=lastError?.message||"";
+    if(arrangementPatch&&episodeArrangementValidationIssues(previousOutput).global.length)break;
+    const localRepairPrompt=arrangementPatch&&previousOutput?buildLocalArrangementRepairPrompt(previousOutput,arrangementPatchBasis,extra):"";
+    if(arrangementPatch&&!localRepairPrompt)break;
+    const scriptRepairPrompt=stage==="episode"&&attempt&&previousOutput?buildMissingScriptScenesPrompt(previousOutput,lastError?.message,extra):"";
+    const forbiddenSceneRepairPrompt=stage==="episode"&&attempt&&previousOutput&&!scriptRepairPrompt?buildForbiddenScriptScenesPrompt(previousOutput,lastError?.message,extra):"";
+    const messages=localRepairPrompt?[{role:"user",content:localRepairPrompt}]:scriptRepairPrompt?[{role:"user",content:scriptRepairPrompt}]:forbiddenSceneRepairPrompt?[{role:"user",content:forbiddenSceneRepairPrompt}]:attempt&&previousOutput?(["episode_novel","episode"].includes(stage)?[{role:"user",content:compactRevisionPrompt(stage,previousOutput,retryInstruction,extra)}]:[{role:"user",content:prompt+jsonInstruction},{role:"assistant",content:previousOutput},{role:"user",content:retryInstruction}]):[{role:"user",content:prompt+jsonInstruction+(retryInstruction?`\n\n${retryInstruction}`:"")}];
     const request={model:provider.model,messages};
     // DeepSeek V4 enables high-effort thinking by default. That is useful for
     // reasoning, but it makes long-form generation slower and spends part of
@@ -433,14 +818,20 @@ export async function generate({ stage, project, prompt, extra = {}, schema = nu
     if(provider.id==="minimax")request.max_completion_tokens=outputLimit;else request.max_tokens=outputLimit;
     try{response=await client.chat.completions.create(request,signal?{signal}:undefined);}
     catch(error){
-      if(["outline_spine","outline_dramatic","outline_finalize","scene_treatment_text","episode_boundaries_text","episode_boundary_text","episode_plan_text","episode_novel","episode","memory_events","memory_dimensions","memory_links","memory_characters"].includes(stage)&&attempt<maxAttempts-1&&!signal?.aborted){lastError=error;continue;}
+      if(["outline_spine","outline_dramatic","outline_finalize","scene_treatment_text","episode_boundaries_text","episode_boundary_text","episode_plan_text","episode_arrangement","episode_novel","episode","memory_events","memory_dimensions","memory_links","memory_characters"].includes(stage)&&attempt<maxAttempts-1&&!signal?.aborted){lastError=error;continue;}
       throw error;
     }
     const choice=response.choices?.[0],content=choice?.message?.content||"";
+    if(schema&&choice?.finish_reason==="length"){
+      lastError=new Error(`输出因达到长度上限被截断（finish_reason=length，completion_tokens=${response.usage?.completion_tokens||0}）`);
+      if(attempt<maxAttempts-1)continue;
+      throw lastError;
+    }
     if(response.input_sensitive)throw new Error(`${provider.label} 拒绝了输入内容（敏感类型 ${response.input_sensitive_type||"未知"}），请检查本集内容或平台规则`);
     if(response.output_sensitive)throw new Error(`${provider.label} 拦截了生成结果（敏感类型 ${response.output_sensitive_type||"未知"}），未覆盖原有剧本`);
     const plainText=["episode_novel","episode_arrangement","episode_novel_summary"].includes(stage)?String(content||"").replace(/<think>[\s\S]*?<\/think>/gi,"").replace(/^```(?:text|plaintext|markdown)?\s*/i,"").replace(/\s*```$/i,"").trim():content;
-    output=stage==="episode"?cleanEpisodeText(content):stage==="episode_novel"?splitNovelLongParagraphs(normalizeNovelText(plainText)):["episode_arrangement","episode_novel_summary"].includes(stage)?plainText:stage==="episode_boundary_text"?cleanBoundaryText(content,extra.boundaryField):content;
+    try{output=stage==="episode"?lockScriptSceneHeadings(scriptRepairPrompt?applyMissingScriptScenes(previousOutput,plainText,extra):forbiddenSceneRepairPrompt?applyForbiddenScriptScenes(previousOutput,plainText):cleanEpisodeText(content),extra.episode?.episode_plan):stage==="episode_novel"?splitNovelLongParagraphs(normalizeNovelText(plainText)):stage==="episode_arrangement"&&localRepairPrompt?applyLocalArrangementRepair(previousOutput,plainText,arrangementPatchBasis):stage==="episode_arrangement"?normalizeEpisodeArrangementText(plainText):stage==="episode_novel_summary"?plainText:stage==="episode_boundary_text"?cleanBoundaryText(content,extra.boundaryField):content;}
+    catch(error){lastError=error;output=previousOutput;if(attempt<maxAttempts-1)continue;throw error;}
     if(!schema){
       if(stage==="episode_boundary_text"&&extra.boundaryField==="required_plot"&&extra.requiresOpeningPayoff){
         const firstNode=String(output||"").split(/→|[；;\n]+/).map(x=>x.trim()).filter(Boolean)[0]||"";
@@ -468,6 +859,10 @@ export async function generate({ stage, project, prompt, extra = {}, schema = nu
         if(attempt<maxAttempts-1)continue;
       }else if(["episode","episode_novel","episode_arrangement"].includes(stage)&&validatePlainOutput(stage,output,extra)){
         lastError=new Error(`${stage==="episode"?"剧本":stage==="episode_novel"?"小说":"剧情安排"}不合格：${validatePlainOutput(stage,output,extra)}`);
+        if(stage==="episode_arrangement"){
+          arrangementPatchBasis=lastError.message;
+          if(attempt===0&&!episodeArrangementValidationIssues(output).global.length&&buildLocalArrangementRepairPrompt(output,lastError.message,extra))arrangementPatchStart=1;
+        }
         if(attempt<maxAttempts-1)continue;
       }else if(["episode","episode_novel"].includes(stage)&&Number(extra.maxEffectiveCharacters)>0&&hanCount(output)>Number(extra.maxEffectiveCharacters)){
         const actual=hanCount(output);
@@ -485,7 +880,7 @@ export async function generate({ stage, project, prompt, extra = {}, schema = nu
       lastError=null;break;
     }catch(error){lastError=error;}
   }
-  if(lastError)throw new Error(schema?`${provider.label} 连续${maxAttempts}次未返回可解析的结构化结果：${lastError.message}`:`${provider.label} 连续${maxAttempts}次未生成合格内容：${lastError.message}`);
+  if(lastError)throw new Error(schema?`${provider.label} 连续${maxAttempts}次未返回可解析的结构化结果：${lastError.message}`:stage==="episode_arrangement"?`${provider.label} 完整生成最多2轮、轻量补丁最多3轮后仍未通过：${lastError.message}`:`${provider.label} 连续${maxAttempts}次未生成合格内容：${lastError.message}`);
   return {provider:provider.id,model:provider.model,output,usage:{input_tokens:response.usage?.prompt_tokens||0,output_tokens:response.usage?.completion_tokens||0,total_tokens:response.usage?.total_tokens||0}};
 }
 

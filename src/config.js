@@ -13,7 +13,7 @@ export const config = {
   publicDir: path.join(root, "public"),
   port: Number(process.env.PORT || 6008),
   host: process.env.HOST || "0.0.0.0",
-  llmProvider: process.env.LLM_PROVIDER || (process.env.OPENAI_API_KEY ? "openai" : "mock"),
+  llmProvider: process.env.LLM_PROVIDER === "qwen" ? "custom" : process.env.LLM_PROVIDER || (process.env.OPENAI_API_KEY ? "openai" : "mock"),
   openaiModel: process.env.LLM_PROVIDER === "sensenova" && process.env.OPENAI_MODEL === "sensenova-6.8-flash-lite"
     ? "deepseek-v4-flash"
     : process.env.OPENAI_MODEL || "gpt-5.4-mini",
@@ -37,11 +37,10 @@ export const config = {
     minimax: process.env.MINIMAX_API_KEY || "",
     zhipu: process.env.ZHIPU_API_KEY || "",
     deepseek: process.env.DEEPSEEK_API_KEY || "",
-    qwen: process.env.DASHSCOPE_API_KEY || "",
     moonshot: process.env.MOONSHOT_API_KEY || "",
     baidu: process.env.BAIDU_QIANFAN_API_KEY || "",
     sensenova: process.env.SENSENOVA_API_KEY || "",
-    custom: process.env.CUSTOM_API_KEY || ""
+    custom: process.env.CUSTOM_API_KEY || (process.env.LLM_PROVIDER === "qwen" ? process.env.DASHSCOPE_API_KEY || "" : "")
   }
 };
 
@@ -50,7 +49,6 @@ export const providerDefaults = {
   minimax: { label:"MiniMax（中国区）", baseUrl:"https://api.minimaxi.com/v1", model:"MiniMax-M2.7", protocol:"chat_completions" },
   zhipu: { label:"智谱 GLM", baseUrl:"https://open.bigmodel.cn/api/paas/v4", model:"glm-5.2", protocol:"chat_completions" },
   deepseek: { label:"DeepSeek", baseUrl:"https://api.deepseek.com", model:"deepseek-v4-flash", protocol:"chat_completions" },
-  qwen: { label:"通义千问（阿里云百炼）", baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1", model:"qwen3.8-max", protocol:"chat_completions" },
   moonshot: { label:"Kimi / 月之暗面", baseUrl:"https://api.moonshot.cn/v1", model:"kimi-k2.6", protocol:"chat_completions" },
   baidu: { label:"百度千帆", baseUrl:"https://qianfan.baidubce.com/v2", model:"ernie-5.0", protocol:"chat_completions" },
   sensenova: { label:"商汤日日新", baseUrl:"https://token.sensenova.cn/v1", model:"deepseek-v4-flash", protocol:"chat_completions", models:[

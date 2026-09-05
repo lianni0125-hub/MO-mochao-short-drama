@@ -146,7 +146,7 @@ app.put("/api/settings/llm", (req, res) => {
   const envPath = path.join(config.root, ".env");
   const existing = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8").split(/\r?\n/) : [];
   const values = new Map(existing.filter(Boolean).map(line => { const i=line.indexOf("="); return i>0?[line.slice(0,i),line.slice(i+1)]:[line,""]; }));
-  const keyName={openai:"OPENAI_API_KEY",minimax:"MINIMAX_API_KEY",zhipu:"ZHIPU_API_KEY",deepseek:"DEEPSEEK_API_KEY",qwen:"DASHSCOPE_API_KEY",moonshot:"MOONSHOT_API_KEY",baidu:"BAIDU_QIANFAN_API_KEY",sensenova:"SENSENOVA_API_KEY",custom:"CUSTOM_API_KEY"}[provider];
+  const keyName={openai:"OPENAI_API_KEY",minimax:"MINIMAX_API_KEY",zhipu:"ZHIPU_API_KEY",deepseek:"DEEPSEEK_API_KEY",moonshot:"MOONSHOT_API_KEY",baidu:"BAIDU_QIANFAN_API_KEY",sensenova:"SENSENOVA_API_KEY",custom:"CUSTOM_API_KEY"}[provider];
   values.set("LLM_PROVIDER", provider); values.set("OPENAI_MODEL", model); values.set("LLM_BASE_URL", baseUrl); if (keyName&&key) values.set(keyName,key);
   fs.writeFileSync(envPath, [...values].map(([k,v]) => `${k}=${v}`).join("\n") + "\n", { encoding:"utf8", mode:0o600 });
   config.llmProvider=provider; config.openaiModel=model; config.baseUrl=baseUrl; if(key) config.providerKeys[provider]=key;
@@ -272,6 +272,15 @@ app.patch("/api/projects/:id", requireProject, (req, res) => {
   });
   res.json(projectRow(req.project.id));
 });
+app.put("/api/projects/:id/episode-count",requireProject,(req,res)=>{
+  const total=Number(req.body?.total_episodes);
+  if(!Number.isSafeInteger(total)||total<1||total>1000)return res.status(400).json({error:"总集数必须是1–1000之间的整数"});
+  const active=get("SELECT id FROM jobs WHERE project_id=@id AND status IN ('queued','running') LIMIT 1",{id:req.project.id});
+  if(active)return res.status(409).json({error:"当前项目仍有生成任务，请等待完成或取消后再修改集数"});
+  run("UPDATE projects SET total_episodes=@total,updated_at=@time WHERE id=@id",{total,time:now(),id:req.project.id});
+  const retained=Number(get("SELECT COUNT(*) count FROM episodes WHERE project_id=@id AND episode_no>@total",{id:req.project.id,total})?.count||0);
+  res.json({total_episodes:total,previous_total_episodes:Number(req.project.total_episodes),retained_out_of_range:retained});
+});
 app.put("/api/projects/:id/template",requireProject,(req,res)=>{const templateId=String(req.body.template_id||"default");if(!builtinTemplateById(templateId)&&!get("SELECT id FROM templates WHERE id=@id AND (project_id IS NULL OR project_id=@pid)",{id:Number(templateId),pid:req.project.id}))return res.status(404).json({error:"模板不存在"});run("UPDATE projects SET template_id=@template,updated_at=@time WHERE id=@id",{template:templateId,time:now(),id:req.project.id});res.json({template_id:templateId});});
 app.put("/api/projects/:id/emotion-intensity",requireProject,(req,res)=>{const value=req.body.emotion_intensity==="extreme"?"extreme":"strong";run("UPDATE projects SET emotion_intensity=@value,updated_at=@time WHERE id=@id",{value,time:now(),id:req.project.id});res.json({emotion_intensity:value});});
 app.put("/api/projects/:id/story-mode",requireProject,(req,res)=>{const value=req.body.story_mode==="miniprogram"?"miniprogram":"normal";run("UPDATE projects SET story_mode=@value,updated_at=@time WHERE id=@id",{value,time:now(),id:req.project.id});res.json({story_mode:value});});
@@ -330,11 +339,13 @@ app.post("/api/projects/:id/jobs/full-book", requireProject,requireRealGeneratio
   if(!count)return res.status(400).json({error:"请先生成完整逐集框架"});
   const startEpisode=req.body.start_episode==null?1:Number(req.body.start_episode);
   if(!Number.isInteger(startEpisode)||startEpisode<1||!get("SELECT id FROM episodes WHERE project_id=@id AND episode_no=@episode",{id:req.project.id,episode:startEpisode}))return res.status(400).json({error:"重写起始集数无效"});
+  const endEpisode=req.body.end_episode==null?Number(req.project.total_episodes):Number(req.body.end_episode);
+  if(!Number.isInteger(endEpisode)||endEpisode<startEpisode||endEpisode>Number(req.project.total_episodes)||!get("SELECT id FROM episodes WHERE project_id=@id AND episode_no=@episode",{id:req.project.id,episode:endEpisode}))return res.status(400).json({error:`生成结束集数必须在 EP${String(startEpisode).padStart(2,"0")}–EP${String(req.project.total_episodes).padStart(2,"0")} 之间`});
   const autoRetryLimit=Number(req.body.auto_retry_limit??5);
   if(!Number.isSafeInteger(autoRetryLimit)||autoRetryLimit<0)return res.status(400).json({error:"自动继续次数必须是非负整数"});
   const existing=get("SELECT id FROM jobs WHERE project_id=@id AND type='full_book' AND status IN ('queued','running')",{id:req.project.id});
   if(existing)return res.status(409).json({error:"已有全本或连锁重写任务正在进行，请等待完成或先取消"});
-  res.status(202).json(enqueueJob(req.project.id,"full_book",startEpisode===1?"all":String(startEpisode),{overwrite:Boolean(req.body.overwrite),start_episode:startEpisode,auto_retry_limit:autoRetryLimit}));
+  res.status(202).json(enqueueJob(req.project.id,"full_book",startEpisode===1?"all":String(startEpisode),{overwrite:Boolean(req.body.overwrite),start_episode:startEpisode,end_episode:endEpisode,auto_retry_limit:autoRetryLimit}));
 });
 
 app.post("/api/projects/:id/constraints", requireProject, (req, res) => {

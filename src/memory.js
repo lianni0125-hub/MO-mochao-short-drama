@@ -115,7 +115,9 @@ export function memorySnapshot(projectId){
   const temporalRelations=all(`SELECT tr.*,a.summary anchor_summary,e.summary event_summary FROM memory_temporal_relations tr LEFT JOIN memory_events a ON a.id=tr.anchor_event_id JOIN memory_events e ON e.id=tr.event_id WHERE tr.project_id=@id ORDER BY tr.episode_no,tr.event_id,tr.marker_order`,{id:projectId});
   const events=all("SELECT * FROM memory_events WHERE project_id=@id AND active=1 ORDER BY episode_no DESC,event_order DESC LIMIT 160",{id:projectId}).map(row=>({...row,time_text:eventDisplayTime(row),temporal_markers:temporalRelations.filter(item=>item.event_id===row.id),participants:JSON.parse(row.participants_json||"[]"),embedding_json:undefined}));
   const abilities=all("SELECT * FROM memory_golden_abilities WHERE project_id=@id AND active=1 ORDER BY latest_episode DESC,canonical_name",{id:projectId}),goldenFingers=attachProvenGoldenAbilities(all("SELECT * FROM memory_golden_fingers WHERE project_id=@id AND active=1 ORDER BY latest_episode DESC,canonical_name",{id:projectId}),events).map(item=>({...item,abilities:abilities.filter(ability=>ability.golden_name===item.canonical_name)}));
-  return {stats:memoryStats(projectId),entities:all("SELECT * FROM memory_entities WHERE project_id=@id AND active=1 ORDER BY kind,canonical_name",{id:projectId}).map(row=>({...row,aliases:JSON.parse(row.aliases_json||"[]")})),events,temporalRelations,links:all("SELECT * FROM memory_links WHERE project_id=@id ORDER BY id DESC LIMIT 240",{id:projectId}),chains:all(`SELECT c.*,COUNT(ce.event_id) event_count,MIN(e.episode_no) start_episode,MAX(e.episode_no) latest_episode FROM memory_chains c LEFT JOIN memory_chain_events ce ON ce.chain_id=c.id LEFT JOIN memory_events e ON e.id=ce.event_id WHERE c.project_id=@id AND c.active=1 GROUP BY c.id ORDER BY latest_episode DESC,c.id DESC`,{id:projectId}).map(chain=>({...chain,event_ids:all("SELECT event_id FROM memory_chain_events WHERE chain_id=@id",{id:chain.id}).map(row=>row.event_id)})),relationships:all("SELECT * FROM memory_relationships WHERE project_id=@id ORDER BY latest_episode DESC,person_a,person_b",{id:projectId}),secondaryCharacters:all("SELECT * FROM memory_secondary_characters WHERE project_id=@id AND active=1 ORDER BY latest_episode DESC,canonical_name",{id:projectId}).map(row=>({...row,identity:cleanCharacterProfile(row.identity),traits:cleanCharacterProfile(row.traits)})),goldenFingers,importantProps:all("SELECT * FROM memory_important_props WHERE project_id=@id AND active=1 ORDER BY latest_episode DESC,canonical_name",{id:projectId}),resources:all("SELECT * FROM memory_resources WHERE project_id=@id AND active=1 ORDER BY latest_episode DESC,owner,canonical_name",{id:projectId}).map(row=>({...row,changes:all("SELECT * FROM memory_resource_changes WHERE project_id=@pid AND owner=@owner AND resource_name=@name ORDER BY episode_no,change_order",{pid:projectId,owner:row.owner,name:row.canonical_name})}))};
+  const completedScripts=all(`SELECT e.project_id,e.episode_no,e.script FROM episodes e JOIN memory_extractions x ON x.project_id=e.project_id AND x.episode_no=e.episode_no WHERE e.project_id=@id AND x.status='completed' AND e.script IS NOT NULL AND TRIM(e.script)<>'' ORDER BY e.episode_no`,{id:projectId});
+  const mainTimePoint=screenplayTimePoints(completedScripts).at(-1)||null;
+  return {stats:memoryStats(projectId),mainTimePoint,entities:all("SELECT * FROM memory_entities WHERE project_id=@id AND active=1 ORDER BY kind,canonical_name",{id:projectId}).map(row=>({...row,aliases:JSON.parse(row.aliases_json||"[]")})),events,temporalRelations,links:all("SELECT * FROM memory_links WHERE project_id=@id ORDER BY id DESC LIMIT 240",{id:projectId}),chains:all(`SELECT c.*,COUNT(ce.event_id) event_count,MIN(e.episode_no) start_episode,MAX(e.episode_no) latest_episode FROM memory_chains c LEFT JOIN memory_chain_events ce ON ce.chain_id=c.id LEFT JOIN memory_events e ON e.id=ce.event_id WHERE c.project_id=@id AND c.active=1 GROUP BY c.id ORDER BY latest_episode DESC,c.id DESC`,{id:projectId}).map(chain=>({...chain,event_ids:all("SELECT event_id FROM memory_chain_events WHERE chain_id=@id",{id:chain.id}).map(row=>row.event_id)})),relationships:all("SELECT * FROM memory_relationships WHERE project_id=@id ORDER BY latest_episode DESC,person_a,person_b",{id:projectId}),secondaryCharacters:all("SELECT * FROM memory_secondary_characters WHERE project_id=@id AND active=1 ORDER BY latest_episode DESC,canonical_name",{id:projectId}).map(row=>({...row,identity:cleanCharacterProfile(row.identity),traits:cleanCharacterProfile(row.traits)})),goldenFingers,importantProps:all("SELECT * FROM memory_important_props WHERE project_id=@id AND active=1 ORDER BY latest_episode DESC,canonical_name",{id:projectId}),resources:all("SELECT * FROM memory_resources WHERE project_id=@id AND active=1 ORDER BY latest_episode DESC,owner,canonical_name",{id:projectId}).map(row=>({...row,changes:all("SELECT * FROM memory_resource_changes WHERE project_id=@pid AND owner=@owner AND resource_name=@name ORDER BY episode_no,change_order",{pid:projectId,owner:row.owner,name:row.canonical_name})}))};
 }
 
 export function rebuildTemporalRelations(projectId,episodeNo=null){
@@ -448,7 +450,7 @@ ${episode.script}`;
     candidates=semanticCandidates(project.id,episode.episode_no,eventVectors);
   }
   const dimensionTexts=[...dimension.relationships.map(item=>item.summary),...dimension.secondaryCharacters.map(item=>`${item.name}：${item.identity}；${item.traits}`),...dimension.goldenFingers.filter(item=>item.change_type!=="无状态变化"&&text(item.change_summary)).map(item=>item.change_summary),...dimension.goldenAbilities.filter(item=>item.change_type!=="无状态变化"&&text(item.change_summary)).map(item=>item.change_summary),...dimension.importantProps.filter(item=>item.change_type!=="无状态变化"&&text(item.change_summary)).map(item=>item.change_summary),...dimension.resources.filter(item=>item.change_type!=="无状态变化"&&text(item.change_summary)).map(item=>item.change_summary)],dimensionVectors=dimensionTexts.length?await embedTexts(dimensionTexts,{signal}):[];let dimensionVectorIndex=0;
-  let semanticLinks=[];
+  let semanticLinks=[],linkWarning="";
   if(raw.length>1||candidates.length){
     const localOnly=!candidates.length;
     run("UPDATE jobs SET message=@message WHERE project_id=@pid AND type IN ('episode_state_extract','episode_script','episode','full_book') AND status='running'",{pid:project.id,message:`正在判定 EP${String(episode.episode_no).padStart(2,"0")} 的明确剧情关系`});
@@ -482,20 +484,20 @@ ${JSON.stringify(raw.map(item=>({order:item.order,summary:item.summary,source_qu
 
 【历史候选】
 ${JSON.stringify(candidates.map(item=>({id:item.id,episode_no:item.episode_no,event_order:item.event_order,summary:item.summary})),null,2)}`;
-    const linked=await generate({stage:"memory_links",project,prompt:linkPrompt,schema:localOnly?localLinkSchema:linkSchema,extra:{episode},signal});
     const candidateIds=new Set(candidates.map(item=>Number(item.id))),seenLinks=new Set();
-    semanticLinks=(linked.output?.links||[]).map(link=>localOnly?{...link,from_type:"current",from_candidate_id:null}:link).filter(link=>{
+    const validLinks=(links,forceLocal=false)=>(links||[]).map(link=>(localOnly||forceLocal)?{...link,from_type:"current",from_candidate_id:null}:link).filter(link=>{
       const to=Number(link.to_order),from=Number(link.from_order),candidate=Number(link.from_candidate_id);
       const valid=semanticRelations.has(link.relation)&&to>=1&&to<=raw.length&&((link.from_type==="current"&&from>=1&&from<to)||(link.from_type==="history"&&candidateIds.has(candidate)));
       if(!valid)return false;const key=`${link.from_type}|${from||candidate}|${to}|${link.relation}`;if(seenLinks.has(key))return false;seenLinks.add(key);return true;
     });
+    try{const linked=await generate({stage:"memory_links",project,prompt:linkPrompt,schema:localOnly?localLinkSchema:linkSchema,extra:{episode},signal});semanticLinks=validLinks(linked.output?.links||[]);}
+    catch(error){if(signal?.aborted)throw error;throw new Error(`剧情关系建链失败：${error.message||String(error)}；本集新记忆尚未入库，原记忆已完整保留`);}
     const hasObviousLocalChain=raw.some(item=>item.event_type==="system_change"||item.event_type==="capability_change")&&raw.length>=3;
     if(!semanticLinks.length&&hasObviousLocalChain){
       run("UPDATE jobs SET message=@message WHERE project_id=@pid AND type IN ('episode_state_extract','episode_script','episode','full_book') AND status='running'",{pid:project.id,message:`EP${String(episode.episode_no).padStart(2,"0")} 建链结果为空，正在定向重试一次`});
-      const retryPrompt=`${linkPrompt}\n\n【上一轮问题】\n上一轮返回了空剧情关系，但当前事件中明确存在系统/能力的激活、任务、使用、结果或危险警告链。只重做本集内部关系，不连接纯粹相邻事件；至少检查这些明确动作之间是否构成回应、导致、利用、揭示或升级。`;
-      const retried=await generate({stage:"memory_links",project,prompt:retryPrompt,schema:localLinkSchema,extra:{episode},signal});
-      semanticLinks=(retried.output?.links||[]).map(link=>({...link,from_type:"current",from_candidate_id:null})).filter(link=>{const to=Number(link.to_order),from=Number(link.from_order),valid=semanticRelations.has(link.relation)&&to>=1&&to<=raw.length&&from>=1&&from<to;if(!valid)return false;const key=`current|${from}|${to}|${link.relation}`;if(seenLinks.has(key))return false;seenLinks.add(key);return true;});
-      if(!semanticLinks.length)throw new Error("剧情事件已完整提炼，但模型连续两次未建立任何明确剧情关系；已保留原记忆，请重试建链");
+      const retryPrompt=`你是剧情因果图的定点建链员。只根据下面已经提炼完成的本集事件，返回存在明确因果语义的本集有向边。from_order必须小于to_order；relation只能是回应、兑现、导致、反转、阻断、利用、揭示、升级、促使。不得连接纯粹相邻事件；系统或能力的激活、任务、使用、结果及危险警告若构成明确关系，应当连接。没有可靠关系可以返回空links。\n\n【本集事件】\n${JSON.stringify(raw.map(item=>({order:item.order,summary:item.summary,source_quote:item.source_quote})),null,2)}`;
+      try{const retried=await generate({stage:"memory_links",project,prompt:retryPrompt,schema:localLinkSchema,extra:{episode},signal});semanticLinks=validLinks(retried.output?.links||[],true);if(!semanticLinks.length)linkWarning="建链结果为空，事件与向量已照常保存";}
+      catch(error){if(signal?.aborted)throw error;throw new Error(`剧情关系定向建链失败：${error.message||String(error)}；本集新记忆尚未入库，原记忆已完整保留`);}
     }
   }
   transaction(()=>{
@@ -541,7 +543,7 @@ ${JSON.stringify(candidates.map(item=>({id:item.id,episode_no:item.episode_no,ev
       VALUES(@pid,@episode,@scenes,@paragraphs,@first,@audit,@final,'completed',@time)
       ON CONFLICT(project_id,episode_no) DO UPDATE SET scene_count=excluded.scene_count,paragraph_count=excluded.paragraph_count,first_pass_count=excluded.first_pass_count,audit_added_count=excluded.audit_added_count,final_count=excluded.final_count,status='completed',updated_at=excluded.updated_at`,{pid:project.id,episode:episode.episode_no,scenes:scenes.length,paragraphs:text(episode.script).split(/\r?\n/).filter(line=>line.trim()).length,first:firstPass.length,audit:audited.length,final:inserted.length,time:now()});
   });
-  return {episode:episode.episode_no,events:raw.length,scenes:scenes.length,firstPass:firstPass.length,auditAdded:audited.length,provider:audit.provider,model:audit.model};
+  return {episode:episode.episode_no,events:raw.length,links:semanticLinks.length,linkWarning,scenes:scenes.length,firstPass:firstPass.length,auditAdded:audited.length,provider:audit.provider,model:audit.model};
 }
 
 function keywords(value){return [...new Set((text(value).match(/[A-Za-z0-9]+|[一-鿿]{2,8}/g)||[]).filter(x=>x.length>=2))];}
@@ -552,24 +554,37 @@ function screenplayTimePoint(rows){
     [/(?:中午|正午)/,3,"中午"],[/(?:下午)/,4,"下午"],[/(?:傍晚|黄昏)/,5,"傍晚"],
     [/(?:夜晚|晚上|(?<!深)夜)/,6,"夜晚"],[/(?:深夜)/,7,"深夜"],[/(?:白天|(?:^|\s)日$)/,3,"白天"]
   ];
-  let day=1,lastRank=null,lastLabel="时段待定",found=false;
+  const dayNumber=value=>{const raw=text(value);if(/^\d+$/.test(raw))return Number(raw);const digit={一:1,二:2,两:2,三:3,四:4,五:5,六:6,七:7,八:8,九:9};if(raw==="十")return 10;if(raw.startsWith("十"))return 10+(digit[raw[1]]||0);if(raw.endsWith("十"))return (digit[raw[0]]||0)*10;return raw.includes("十")?(digit[raw[0]]||0)*10+(digit[raw[2]]||0):(digit[raw]||0)};
+  const stableVagueAdvance=(marker,row,lineIndex)=>{const ranges=marker==="几天后"?[2,4]:marker==="数日后"?[3,6]:[4,8],[min,max]=ranges,seed=`${row.project_id||""}|${row.episode_no||""}|${lineIndex}|${marker}|${text(row.script)}`,value=crypto.createHash("sha256").update(seed).digest().readUInt32BE(0);return min+(value%(max-min+1));};
+  let day=1,lastRank=null,lastLabel="时段待定",found=false,approximate=false;
   for(const row of rows){
-    for(const rawLine of text(row.script).split(/\r?\n/)){
+    for(const [lineIndex,rawLine] of text(row.script).split(/\r?\n/).entries()){
       const line=rawLine.trim();
       const heading=/^\d+\s+(?:内\/外|外\/内|内景?|外景?)\s+(.+)$/.exec(line)?.[1]
         ||/^【(?:内|外)\s+(.+)】$/.exec(line)?.[1];
       if(!heading||/(?:回忆|闪回|倒叙|梦境|幻想|未来画面|闪前)/.test(heading))continue;
-      const explicitDays=[...heading.matchAll(/(\d+)\s*天后/g)];
-      if(explicitDays.length)day+=Math.max(...explicitDays.map(item=>Number(item[1])||0));
-      else if(/(?:次日|翌日|第二天)/.test(heading))day+=1;
+      const explicitDays=[...heading.matchAll(/(\d+|[一二两三四五六七八九十]{1,3})\s*(?:天|日)后/g)],explicitWeeks=[...heading.matchAll(/(\d+|[一二两三四五六七八九十]{1,3})\s*(?:周|星期)后/g)];
+      let explicitAdvance=explicitDays.length?Math.max(...explicitDays.map(item=>dayNumber(item[1]))):explicitWeeks.length?Math.max(...explicitWeeks.map(item=>dayNumber(item[1])*7)):/(?:次日|翌日|第二天|第二日|隔天|隔日)/.test(heading)?1:0;
+      const vagueMarker=heading.match(/(?:几天后|数日后|多日后)/)?.[0]||"";
+      if(!explicitAdvance&&vagueMarker){explicitAdvance=stableVagueAdvance(vagueMarker,row,lineIndex);approximate=true;}
+      if(explicitAdvance)day+=explicitAdvance;
       const matches=periods.filter(([pattern])=>pattern.test(heading));
       if(!matches.length)continue;
       const [,rank,label]=matches.at(-1);
-      if(!explicitDays.length&&!/(?:次日|翌日|第二天)/.test(heading)&&lastRank!==null&&lastRank>=4&&rank<=2)day+=1;
+      const sameNightRange=lastRank!==null&&lastRank>=6&&rank>=6,broadDayRefinement=lastLabel==="白天"&&rank<=3;
+      if(!explicitAdvance&&lastRank!==null&&rank<lastRank&&!sameNightRange&&!broadDayRefinement)day+=1;
       lastRank=rank;lastLabel=label;found=true;
     }
   }
-  return {day,period:lastLabel,found};
+  return {day,period:lastLabel,found,approximate};
+}
+function screenplayTimePoints(rows){
+  const ordered=[...(rows||[])].sort((a,b)=>Number(a.episode_no)-Number(b.episode_no)),accepted=[],points=[];
+  for(const row of ordered){
+    accepted.push(row);
+    points.push({...screenplayTimePoint(accepted),episodeNo:Number(row.episode_no)||0});
+  }
+  return points;
 }
 
 export async function compileMemoryContext(projectId,episode,signal){
@@ -640,7 +655,7 @@ export async function compileMemoryContext(projectId,episode,signal){
   const previousTemporal=temporalRelations.filter(item=>Number(item.episode_no)===Number(episode.episode_no)-1),seedTemporal=temporalRelations.filter(item=>ids.has(Number(item.event_id))||ids.has(Number(item.anchor_event_id))),temporalNeighborIds=new Set(seedTemporal.flatMap(item=>[Number(item.event_id),Number(item.anchor_event_id)]).filter(Boolean)),selectedTemporal=temporalRelations.filter(item=>temporalNeighborIds.has(Number(item.event_id))||temporalNeighborIds.has(Number(item.anchor_event_id))).filter(item=>Number(item.episode_no)!==Number(episode.episode_no)-1&&item.timeline_type!=="flashback"&&item.timeline_type!=="flashforward").sort((a,b)=>b.episode_no-a.episode_no||b.event_id-a.event_id).slice(0,10),commitmentTemporal=temporalRelations.filter(item=>![...previousTemporal,...selectedTemporal].some(saved=>saved.id===item.id)&&["after","within","at"].includes(item.relation)&&commitmentPattern.test([item.event_subject,item.event_action,item.event_object,item.event_result,item.event_quote].map(text).join(""))&&!settledCommitments.has(Number(item.event_id))&&!["flashback","flashforward"].includes(item.timeline_type)).sort((a,b)=>b.episode_no-a.episode_no||b.event_id-a.event_id).slice(0,4);
   const chosenTemporal=[...new Map([...previousTemporal,...selectedTemporal,...commitmentTemporal].map(item=>[item.id,item])).values()].sort((a,b)=>a.episode_no-b.episode_no||a.event_id-b.event_id||a.marker_order-b.marker_order),formatTemporal=item=>item.relation_role==="deadline"?`EP${String(item.episode_no).padStart(2,"0")}｜期限边：${item.event_summary} ──${item.marker_text}内/至──→ ${item.target_label||"未来期限点"}｜${precisionLabel[item.precision]||item.precision}时间`:`EP${String(item.episode_no).padStart(2,"0")}｜时间边：${item.anchor_summary||item.anchor_label||"未确定锚点"} ──${item.marker_text}·${relationLabel[item.relation]||item.relation}──→ ${item.event_summary}｜${precisionLabel[item.precision]||item.precision}时间`;
   const temporalGraph=[previousTemporal.length?`【上一集时间｜固定保底】\n${previousTemporal.map(formatTemporal).join("\n")}`:"",selectedTemporal.length?`【随向量命中事件召回】\n${selectedTemporal.map(formatTemporal).join("\n")}`:"",commitmentTemporal.length?`【仍可能约束后续的时间承诺】\n${commitmentTemporal.map(formatTemporal).join("\n")}`:""].filter(Boolean).join("\n");
-  const priorScripts=all("SELECT episode_no,script FROM episodes WHERE project_id=@pid AND episode_no<@episode AND script IS NOT NULL AND TRIM(script)<>'' ORDER BY episode_no",{pid:projectId,episode:episode.episode_no}),previousTime=screenplayTimePoint(priorScripts),dayAnchor=priorScripts.length?`上一集主线时间落点：第${previousTime.day}天·${previousTime.period}。这是已完成剧本推算出的粗粒度日序；本集可按本集事件自然推进，不得把它当成必须停留的时段。`:`故事时间起点：主线第1天；开篇时段由本集内容自然确定。`;
+  const priorScripts=all(`SELECT e.project_id,e.episode_no,e.script FROM episodes e JOIN memory_extractions x ON x.project_id=e.project_id AND x.episode_no=e.episode_no WHERE e.project_id=@pid AND e.episode_no<@episode AND x.status='completed' AND e.script IS NOT NULL AND TRIM(e.script)<>'' ORDER BY e.episode_no`,{pid:projectId,episode:episode.episode_no}),previousTime=screenplayTimePoints(priorScripts).at(-1),dayAnchor=previousTime?`上一集主线时间落点：${previousTime.approximate?"约":""}第${previousTime.day}天·${previousTime.period}。这是上一集已完成剧情状态中的粗粒度时间快照；本集可按本集事件自然推进，不得把它当成必须停留的时段。`:`故事时间起点：主线第1天；开篇时段由本集内容自然确定。`;
   const timeAxis=currentAnchor?`当前叙事落点：EP${String(currentAnchor.episode_no).padStart(2,"0")}末端，${currentAnchor.summary}。生成新剧情时从这一落点继续，不得把期限、预告或回忆误当成已经发生。\n${dayAnchor}\n【筛选后的相对时间图】\n${temporalGraph||"暂无与本集相关的明确时间关系"}\n时间边表示两个事件或事件与期限点之间的相对关系，可以双向理解；不得把原文时间标签误当成精确公历。时间关系只随上一集、语义命中事件或仍有效的明确时间承诺进入上下文；已兑现、替代或阻断的旧承诺不再固定发送。倒叙和未来预示仅在对应历史事件被语义召回时作为背景使用，不得覆盖当前人物关系、道具归属、位置、数值和能力状态。`:`当前叙事落点尚未建立。${dayAnchor}只能依据本集规划推进，不得自行换算公历日期。`;
   const previousEvents=previous.map(formatEvent).join("\n"),previousLastEvent=previous.length?formatEvent(previous.at(-1)):"";
   return {profiles,events,chains,relationships:relationshipText,secondaryCharacters:secondaryText,goldenFinger:goldenText,importantProps:propText,resources:resourceText,timeAxis,previousEvents,previousLastEvent,entityCount:relevantEntities.length,eventCount:selected.length,recentCount:previous.length,recalledCount:recalled.length,temporalCount:chosenTemporal.length,embeddingUsed:embeddingConfigured()};
