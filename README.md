@@ -44,7 +44,8 @@ MO-mochao-Windows-v版本号.zip
 git clone https://github.com/lianni0125-hub/MO-mochao-short-drama.git
 cd MO-mochao-short-drama
 npm install
-Copy-Item .env.example .env
+Copy-Item .env.example .env # windows
+# cp .env.example .env # mac
 npm start
 ```
 

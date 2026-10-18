@@ -17,6 +17,13 @@ function rememberBatchLimit(provider,limit){if(Number.isInteger(limit)&&limit>0)
 
 export function embeddingBatchLimitError(error){
   const material=[error?.message,error?.error?.message,error?.response?.data?.error?.message,error?.cause?.message].filter(Boolean).join(" ");
+  const baiduLimit = material.match(/\bembeddings?\s+max\s+input\s+length\s+is\s+(\d+)\b/i);
+  if (baiduLimit) {
+    return {
+      recognized: true,
+      limit: Number(baiduLimit[1])
+    };
+  }
   const batchContext=/(?:batch[ _-]?(?:size|count)|input\.contents|too\s+many\s+inputs|number\s+of\s+inputs|input\s+count|contents?\s+(?:count|size)|批量|批次|输入数量|输入条数|文本数量|文本条数|数组(?:大小|长度|数量))/i.test(material);
   const limitContext=/(?:not\s+(?:be\s+)?(?:larger|greater)\s+than|no\s+more\s+than|at\s+most|maximum|max(?:imum)?|limit(?:ed)?\s+to|too\s+(?:many|large)|invalid|不得超过|不能超过|不可超过|最多|上限|最大|数量无效|批量大小无效)/i.test(material);
   if(!batchContext||!limitContext)return {recognized:false,limit:null};
@@ -56,7 +63,13 @@ export async function embedTexts(values,{signal,providerOverride,purpose="docume
   const provider=providerOverride||activeEmbeddingProvider();
   if(provider.id==="mock")return input.map(mockVector);
   if(!provider.apiKey||!provider.baseUrl||!provider.model)return [];
-  let limit=learnedBatchLimit(provider)||input.length;
+  // let limit=learnedBatchLimit(provider)||input.length;
+  const providerCap =
+    provider.id === "baidu" && provider.model === "bge-large-zh"? 16: Infinity;
+  let limit = Math.min(
+    learnedBatchLimit(provider) || input.length,
+    providerCap
+  );
   for(let adjustment=0;adjustment<12;adjustment++){
     try{
       const vectors=[];
